@@ -7,8 +7,8 @@ windows:
 - window_name: w1
   layout: tiled
   shell_command_before:
-    - env_sparse_map
-    - source /home/masonbp/ws/sparse_map_ws/devel/setup.bash
+    - $SETUP_SEG_TRACK
+    - source $SEG_TRACK_WS/devel/setup.bash
 
   panes:
   - roscore
@@ -20,8 +20,8 @@ windows:
 - window_name: w2
   layout: tiled
   shell_command_before:
-    - env_sparse_map
-    - source /home/masonbp/ws/boeing_demo_ws/devel/setup.bash
+    - $SETUP_SEG_TRACK
+    - source $SEG_TRACK_WS/devel/setup.bash
 
   panes:
   - 
