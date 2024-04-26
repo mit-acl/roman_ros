@@ -1,0 +1,1 @@
+ros_numpy @ git+https://github.com/eric-wieser/ros_numpy

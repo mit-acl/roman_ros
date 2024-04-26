@@ -1,0 +1,25 @@
+session_name: segment_track_offline
+
+options:
+  default-command: /bin/bash
+
+windows:
+- window_name: w1
+  layout: tiled
+  shell_command_before:
+    - env_sparse_map
+    - source /home/masonbp/ws/sparse_map_ws/devel/setup.bash
+
+  panes:
+  - roscore
+  - sleep 1; roslaunch segment_track_ros rover.launch robot:=RR04
+  - sleep 3; roslaunch segment_track_ros offline_data.launch bag:=/home/masonbp/data/motlee_jan_2024/00/RR04.bag
+
+- window_name: w2
+  layout: tiled
+  shell_command_before:
+    - env_sparse_map
+    - source /home/masonbp/ws/boeing_demo_ws/devel/setup.bash
+
+  panes:
+  - 
