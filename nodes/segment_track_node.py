@@ -25,13 +25,14 @@ from segment_track.tracker import Tracker
 from segment_track.segment import Segment
 
 # relative
-from utils import observation_from_msg
+from utils import observation_from_msg, segment_to_msg
 
 class SegmentTrackerNode():
 
     def __init__(self):
 
         # ros params
+        self.robot_id = rospy.get_param("~robot_id", 0)
         pixel_std_dev = rospy.get_param("~pixel_std_dev", 20.0)
         min_iou = rospy.get_param("~min_iou", 0.25)
         min_sightings = rospy.get_param("~min_sightings", 5)
@@ -83,13 +84,26 @@ class SegmentTrackerNode():
         """
         Triggered by incoming observation messages
         """
+        if len(obs_array_msg.observations) == 0:
+            return
+        
         observations = []
         for obs_msg in obs_array_msg.observations:
             observations.append(observation_from_msg(obs_msg))
 
+        t = observations[0].time
+        assert all([obs.time == t for obs in observations])
+
+        graveyard_ids = [segment.id for segment in self.tracker.segment_graveyard]
         self.tracker.update(obs_array_msg.header.stamp.to_sec(), rnp.numpify(obs_array_msg.pose), observations)
+        updated_graveyard_ids = [segment.id for segment in self.tracker.segment_graveyard]
+        new_graveyard_ids = [seg_id for seg_id in updated_graveyard_ids if seg_id not in graveyard_ids]
 
         # publish segments
+        segment: Segment
+        for segment in self.tracker.segment_graveyard:
+            if segment.last_seen == t or segment.id in new_graveyard_ids:
+                self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
 
     def viz_cb(self, odom_msg, img_msg):
         """
