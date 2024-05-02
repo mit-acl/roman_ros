@@ -9,6 +9,7 @@ import cv2 as cv
 import rospy
 import cv_bridge
 import message_filters
+import tf2_ros
 
 # ROS msgs
 import geometry_msgs.msg as geometry_msgs
@@ -40,8 +41,7 @@ class SegmentTrackerNode():
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
         if self.visualize:
-            self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4))
-    
+            self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")    
 
         # tracker
         rospy.loginfo("Waiting for color camera info messages...")
@@ -69,6 +69,15 @@ class SegmentTrackerNode():
 
         # visualization
         if self.visualize:
+            if self.cam_frame_id is not None:
+                tf_buffer = tf2_ros.Buffer()
+                tf_listener = tf2_ros.TransformListener(tf_buffer)
+                odom_msg = rospy.wait_for_message("odom", nav_msgs.Odometry)
+                transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
+                self.T_BC = rnp.numpify(transform_stamped_msg.transform)
+            else:
+                self.T_BC = np.eye(4)
+            
             self.bridge = cv_bridge.CvBridge()
             subs = [
                 message_filters.Subscriber("odom", nav_msgs.Odometry),
@@ -123,7 +132,7 @@ class SegmentTrackerNode():
             if segment.last_seen < t - 50:
                 continue
             try:
-                bbox = segment.reprojected_bbox(pose) # @ self.T_BC)
+                bbox = segment.reprojected_bbox(pose @ self.T_BC)
             except:
                 continue
             if bbox is None:

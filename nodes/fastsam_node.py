@@ -2,12 +2,14 @@
 
 import numpy as np
 import os
-import ros_numpy as rnp
+from scipy.spatial.transform import Rotation as Rot
 
 # ROS imports
+import ros_numpy as rnp
 import rospy
 import cv_bridge
 import message_filters
+import tf2_ros
 
 # ROS msgs
 import geometry_msgs.msg as geometry_msgs
@@ -32,7 +34,8 @@ class FastSAMNode():
         self.bridge = cv_bridge.CvBridge()
 
         # ros params
-        self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
+        # self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
+        self.cam_frame_id = rospy.get_param("~cam_frame_id", None)
         
         fastsam_weights_path = rospy.get_param("~fastsam_weights")
         fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
@@ -77,6 +80,18 @@ class FastSAMNode():
         self.setup_ros()
 
     def setup_ros(self):
+
+        # tf2 listener
+        if self.cam_frame_id is not None:
+            tf_buffer = tf2_ros.Buffer()
+            tf_listener = tf2_ros.TransformListener(tf_buffer)
+            odom_msg = rospy.wait_for_message("odom", nav_msgs.Odometry)
+            transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
+            self.T_BC = rnp.numpify(transform_stamped_msg.transform)
+        else:
+            self.T_BC = np.eye(4)
+        # except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+        #     print("Didn't find tf.")
         
         # ros subscribers
         subs = [
@@ -97,7 +112,7 @@ class FastSAMNode():
         This function gets called every time synchronized odometry, image message, and 
         depth image message are received.
         """
-        print("Received messages")
+        rospy.loginfo("Received messages")
         odom_msg, img_msg, depth_msg = msgs
         t = img_msg.header.stamp.to_sec()
         pose = rnp.numpify(odom_msg.pose.pose).astype(np.float64) @ self.T_BC
