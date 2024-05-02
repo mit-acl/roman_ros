@@ -5,12 +5,21 @@
   <arg name="bag" />
   <arg name="args" default="" />
 
-  <node pkg="rosbag" type="play" name="player" output="screen" args="--clock $(arg bag) $(arg args)"/>
+  <arg name="uncompress_rgb" default="true"/>
+  <arg name="uncompress_depth" default="true"/>
+  <arg name="color_topic" default="color/image_raw" />
+  <arg name="depth_topic" default="aligned_depth_to_color/image_raw" />
+
+  <node pkg="rosbag" type="play" name="player" output="screen" args="--clock $(arg args) --bags $(arg bag)"/>
 
   <group ns="$(arg robot)" >
     <group ns="$(arg cam)" >
-        <node pkg="image_transport" type="republish" name="rgb_uncompress" args="compressed in:=color/image_raw raw out:=color/image_raw" output="screen"/>
-        <node pkg="image_transport" type="republish" name="depth_uncompress" args="compressedDepth in:=aligned_depth_to_color/image_raw raw out:=aligned_depth_to_color/image_raw" output="screen"/>
+        <node pkg="image_transport" type="republish" name="rgb_uncompress" 
+          args="compressed in:=$(arg color_topic) raw out:=$(arg color_topic)" output="screen" 
+          if="$(arg uncompress_rgb)"/>
+        <node pkg="image_transport" type="republish" name="depth_uncompress" 
+          args="compressedDepth in:=$(arg depth_topic) raw out:=$(arg depth_topic)" 
+          output="screen" if="$(arg uncompress_depth)"/>
     </group>
   </group>
 
