@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Status1
         - /Odometry1
+        - /PointCloud1
       Splitter Ratio: 0.5
     Tree Height: 782
   - Class: rviz/Selection
@@ -99,9 +100,37 @@ Visualization Manager:
       Topic: /hamilton/locus/odometry
       Unreliable: false
       Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz/PointCloud
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: PointCloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 5
+      Size (m): 0.10000000149011612
+      Style: Points
+      Topic: /hamilton/segment_track/object_points
+      Unreliable: false
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
   Enabled: true
   Global Options:
-    Background Color: 48; 48; 48
+    Background Color: 238; 238; 236
     Default Light: true
     Fixed Frame: hamilton/odom
     Frame Rate: 30
@@ -127,7 +156,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 50.472023010253906
+      Distance: 16.202394485473633
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -138,14 +167,14 @@ Visualization Manager:
         X: 0
         Y: 0
         Z: 0
-      Focal Shape Fixed Size: true
+      Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8153984546661377
+      Pitch: 0.6653982996940613
       Target Frame: <Fixed Frame>
-      Yaw: 0.7403987646102905
+      Yaw: 0.7953981757164001
     Saved: ~
 Window Geometry:
   Displays:
@@ -165,5 +194,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 2936
-  X: 144
-  Y: 54
+  X: 3840
+  Y: 0

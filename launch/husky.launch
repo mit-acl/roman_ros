@@ -20,6 +20,7 @@
     <node respawn="false" name="segment_track_node" pkg="segment_track_ros" type="segment_track_node.py" output="screen">
         <param name="visualize" value="true" />
         <param name="cam_frame_id" value="hamilton/forward_color_optical_frame" />
+        <param name="map_frame_id" value="hamilton/odom" />
     </node>
   
   </group>

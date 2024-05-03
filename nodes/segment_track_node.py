@@ -4,6 +4,7 @@ import numpy as np
 import os
 import ros_numpy as rnp
 import cv2 as cv
+import struct
 
 # ROS imports
 import rospy
@@ -41,7 +42,10 @@ class SegmentTrackerNode():
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
         if self.visualize:
-            self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")    
+            self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
+            self.map_frame_id = rospy.get_param("~map_frame_id", "map")
+            self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
+            self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
 
         # tracker
         rospy.loginfo("Waiting for color camera info messages...")
@@ -86,6 +90,7 @@ class SegmentTrackerNode():
             self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=20, slop=.1)
             self.ts.registerCallback(self.viz_cb) # registers incoming messages to callback
             self.annotated_img_pub = rospy.Publisher("segment_track/annotated_img", sensor_msgs.Image, queue_size=5)
+            self.object_points_pub = rospy.Publisher("segment_track/object_points", sensor_msgs.PointCloud, queue_size=5)
 
         rospy.loginfo("Segment Tracker Node setup complete.")
 
@@ -148,6 +153,32 @@ class SegmentTrackerNode():
         
         img_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
         self.annotated_img_pub.publish(img_msg)
+
+        # Point cloud publishing
+        points_msg = sensor_msgs.PointCloud()
+        points_msg.header = img_msg.header
+        points_msg.header.frame_id = self.map_frame_id
+        points_msg.points = []
+        # points_msg.channels = [sensor_msgs.ChannelFloat32(name=channel, values=[]) for channel in ['r', 'g', 'b']]
+        points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
+        
+
+        most_recently_seen_segments = sorted(self.tracker.segments + self.tracker.segment_graveyard, key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
+
+        for segment in most_recently_seen_segments:
+            # color
+            np.random.seed(segment.id)
+            color_unpacked = np.random.rand(3)*256
+            color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+            color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
+            
+            points = segment.points
+            sampled_points = np.random.choice(len(points), min(len(points), 1000), replace=True)
+            points = [points[i] for i in sampled_points]
+            points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
+            points_msg.channels[0].values += [color_packed for _ in points]
+        
+        self.object_points_pub.publish(points_msg)
 
         return
 

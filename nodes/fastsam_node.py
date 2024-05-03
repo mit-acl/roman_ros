@@ -36,6 +36,7 @@ class FastSAMNode():
         # ros params
         # self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
         self.cam_frame_id = rospy.get_param("~cam_frame_id", None)
+        self.map_frame_id = rospy.get_param("~map_frame_id", "map")
         
         fastsam_weights_path = rospy.get_param("~fastsam_weights")
         fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
