@@ -3,6 +3,7 @@
   <arg name="robot" default="spot" />
   <arg name="start_rviz" default="true"/>
   <arg name="rviz_path" default="$(find segment_track_ros)/rviz/$(arg robot).rviz"/>
+  <arg name="seg_viz" default="true"/>
 
   <group ns="$(arg robot)" >
 
@@ -18,7 +19,7 @@
     </node>
 
     <node respawn="false" name="segment_track_node" pkg="segment_track_ros" type="segment_track_node.py" output="screen">
-        <param name="visualize" value="true" />
+        <param name="visualize" value="$(arg seg_viz)" />
         <param name="cam_frame_id" value="frontleft_fisheye" />
         <param name="map_frame_id" value="vision" />
     </node>
