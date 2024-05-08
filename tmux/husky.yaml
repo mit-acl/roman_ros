@@ -1,4 +1,4 @@
-session_name: segment_track_offline
+session_name: segment_track
 
 options:
   default-command: /bin/bash
@@ -7,19 +7,10 @@ windows:
 - window_name: w1
   layout: tiled
   shell_command_before:
+    - source ~/segment_slam_ws/src/segment_track_ros/setup.sh
     - $SETUP_SEG_TRACK
     - source $SEG_TRACK_WS/devel/setup.bash
 
   panes:
-  - roscore
-  - sleep 1; roslaunch dcist_spark_core perception.launch robot_name:=hamilton robot_type:=husky run_hydra:=false start_rviz:=false
-  - sleep 3; roslaunch segment_track_ros husky.launch robot:=hamilton
-
-- window_name: w2
-  layout: tiled
-  shell_command_before:
-    - $SETUP_SEG_TRACK
-    - source $SEG_TRACK_WS/devel/setup.bash
-
-  panes:
-  - 
+  # - roscore
+  - roslaunch segment_track_ros husky.launch robot:=hamilton start_rviz:=false seg_viz:=true
