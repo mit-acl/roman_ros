@@ -72,7 +72,7 @@ class FastSAMNode():
         )
         img_area = depth_params.width * depth_params.height
         self.fastsam.setup_filtering(
-            ignore_people=fastsam_ignore_people,
+            ignore_labels=['person'] if fastsam_ignore_people else [],
             yolo_det_img_size=(128, 128) if fastsam_ignore_people else None,
             allow_tblr_edges=[True, True, True, True] if fastsam_allow_edges else [False, False, False, False],
             area_bounds=[img_area / (fastsam_min_area_div**2), img_area / (fastsam_max_area_div**2)]
