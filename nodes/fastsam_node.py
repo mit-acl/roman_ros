@@ -47,6 +47,7 @@ class FastSAMNode():
         fastsam_allow_edges = rospy.get_param("~fastsam_allow_edges")
         fastsam_min_area_div = rospy.get_param("~fastsam_min_area_div")
         fastsam_max_area_div = rospy.get_param("~fastsam_max_area_div")
+        fastsam_erosion_size = rospy.get_param("~fastsam_erosion_size")
 
         # fastsam wrapper
         self.fastsam = FastSAMWrapper(
@@ -68,7 +69,8 @@ class FastSAMNode():
             depth_cam_params=depth_params, 
             max_depth=8,
             depth_scale=1e3,
-            voxel_size=0.05
+            voxel_size=0.05,
+            erosion_size=fastsam_erosion_size
         )
         img_area = depth_params.width * depth_params.height
         self.fastsam.setup_filtering(
