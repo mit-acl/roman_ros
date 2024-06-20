@@ -14,10 +14,12 @@ git clone git@gitlab.com:mit-acl/sparse_mapping/segment_track_ros.git
 git clone git@gitlab.com:mit-acl/sparse_mapping/segment_slam_msgs.git
 git clone https://github.com/eric-wieser/ros_numpy.git
 git clone git@gitlab.com:mit-acl/sparse_mapping/segment_slam.git
+cd segment_slam && git checkout feature/volume_align && cd ..
 git clone git@github.com:borglab/gtsam.git
 cd gtsam && git checkout 4.2a9 && cd ..
 git clone git@github.com:ethz-asl/gflags_catkin.git
 git clone git@github.com:ethz-asl/glog_catkin.git
+git clone git@github.com:catkin/catkin_simple.git
 cd ~/$ws_name
 catkin config -DCMAKE_BUILD_TYPE=Release -DGTSAM_TANGENT_PREINTEGRATION=OFF \
               -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF 
