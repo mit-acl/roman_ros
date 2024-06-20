@@ -89,7 +89,8 @@ def segment_to_msg(robot_id: int, segment: Segment):
         robot_id=robot_id,
         segment_id=segment.id,
         position=rnp.msgify(geometry_msgs.Point, centroid_from_segment(segment)),
-        volume=estimate_volume(segment.points) if segment.points is not None else 0.0,
+        # volume=estimate_volume(segment.points) if segment.points is not None else 0.0,
+        volume=segment.volume()
     )
     return segment_msg
 

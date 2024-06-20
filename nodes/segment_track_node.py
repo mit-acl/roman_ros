@@ -5,6 +5,7 @@ import os
 import ros_numpy as rnp
 import cv2 as cv
 import struct
+import pickle
 
 # ROS imports
 import rospy
@@ -41,11 +42,18 @@ class SegmentTrackerNode():
         max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.5)
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
+        self.output_file = rospy.get_param("~output_segtrack", None)
         if self.visualize:
             self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
             self.map_frame_id = rospy.get_param("~map_frame_id", "map")
             self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
             self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
+        if self.output_file is not None and self.output_file != "":
+            self.output_file = os.path.expanduser(self.output_file)
+            self.poses = [] # list of poses
+            rospy.loginfo(f"Output file: {self.output_file}")
+        elif self.output_file == "":
+            self.output_file = None
 
         # tracker
         rospy.loginfo("Waiting for color camera info messages...")
@@ -92,6 +100,7 @@ class SegmentTrackerNode():
             self.annotated_img_pub = rospy.Publisher("segment_track/annotated_img", sensor_msgs.Image, queue_size=5)
             self.object_points_pub = rospy.Publisher("segment_track/object_points", sensor_msgs.PointCloud, queue_size=5)
 
+        rospy.on_shutdown(self.shutdown)
         rospy.loginfo("Segment Tracker Node setup complete.")
 
     def obs_cb(self, obs_array_msg):
@@ -118,6 +127,9 @@ class SegmentTrackerNode():
         for segment in self.tracker.segment_graveyard:
             if segment.last_seen == t or segment.id in new_graveyard_ids:
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
+        
+        if self.output_file is not None:
+            self.poses.append(rnp.numpify(obs_array_msg.pose))
 
     def viz_cb(self, odom_msg, img_msg):
         """
@@ -181,6 +193,12 @@ class SegmentTrackerNode():
         self.object_points_pub.publish(points_msg)
 
         return
+    
+    def shutdown(self):
+        if self.output_file is not None:
+            pkl_file = open(self.output_file, 'wb')
+            pickle.dump([self.tracker, self.poses], pkl_file, -1)
+            pkl_file.close()
 
 def main():
 
