@@ -3,6 +3,8 @@
 import numpy as np
 import os
 from scipy.spatial.transform import Rotation as Rot
+import struct
+import open3d as o3d
 
 # ROS imports
 import ros_numpy as rnp
@@ -49,6 +51,8 @@ class FastSAMNode():
         fastsam_max_area_div = rospy.get_param("~fastsam_max_area_div")
         fastsam_erosion_size = rospy.get_param("~fastsam_erosion_size")
 
+        self.visualize = rospy.get_param("~fastsam_viz", False)
+
         # fastsam wrapper
         self.fastsam = FastSAMWrapper(
             weights=os.path.expanduser(os.path.expandvars(fastsam_weights_path)),
@@ -62,17 +66,17 @@ class FastSAMNode():
         depth_info_msg = rospy.wait_for_message("depth/camera_info", sensor_msgs.CameraInfo)
         rospy.loginfo("Waiting for color camera info messages...")
         color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
-        depth_params = CameraParams.from_msg(depth_info_msg)
+        self.depth_params = CameraParams.from_msg(depth_info_msg)
         color_params = CameraParams.from_msg(color_info_msg)
         
         self.fastsam.setup_rgbd_params(
-            depth_cam_params=depth_params, 
+            depth_cam_params=self.depth_params, 
             max_depth=8,
             depth_scale=1e3,
             voxel_size=0.05,
             erosion_size=fastsam_erosion_size
         )
-        img_area = depth_params.width * depth_params.height
+        img_area = self.depth_params.width * self.depth_params.height
         self.fastsam.setup_filtering(
             ignore_labels=['person'] if fastsam_ignore_people else [],
             yolo_det_img_size=(128, 128) if fastsam_ignore_people else None,
@@ -108,6 +112,9 @@ class FastSAMNode():
         # ros publishers
         self.obs_pub = rospy.Publisher("segment_track/observations", segment_slam_msgs.ObservationArray, queue_size=5)
 
+        if self.visualize:
+            self.ptcld_pub = rospy.Publisher("segment_track/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
+
         rospy.loginfo("FastSAM node setup complete.")
 
     def cb(self, *msgs):
@@ -135,7 +142,31 @@ class FastSAMNode():
         )
         self.obs_pub.publish(observation_array)
 
+        if self.visualize:
+            self.pub_ptclds(observations, img_msg.header, depth)
+
         return
+    
+    def pub_ptclds(self, observations, header, depth):
+        points_msg = sensor_msgs.PointCloud()
+        points_msg.header = header
+        points_msg.header.frame_id = self.cam_frame_id
+        points_msg.points = []
+        points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
+
+        for i, obs in enumerate(observations):
+            # color
+            color_unpacked = np.random.rand(3)*256
+            color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+            color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
+            
+            points = obs.point_cloud
+            sampled_points = np.random.choice(len(points), min(len(points), 100), replace=True)
+            points = [points[i] for i in sampled_points]
+            points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
+            points_msg.channels[0].values += [color_packed for _ in points]
+        
+        self.ptcld_pub.publish(points_msg)
 
 def main():
 
