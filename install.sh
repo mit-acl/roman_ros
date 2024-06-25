@@ -35,11 +35,12 @@ source ~/.envs/$python_env/bin/activate
 pip install --upgrade pip
 pip install rospkg
 
-cd ~/$ws_name/python
+cd ~/$ws_name/src
 git clone https://github.com/mbpeterson70/robot_utils.git
+cd robot_utils && git checkout refactor && cd ..
 pip install -e robot_utils
 git clone git@gitlab.com:mit-acl/sparse_mapping/segment_track.git
-cd segment_track && git checkout mason/dev && cd ..
+# cd segment_track && git checkout mason/dev && cd ..
 pip install -e segment_track
 git clone https://github.com/CASIA-IVA-Lab/FastSAM.git
 pip install -r FastSAM/requirements.txt

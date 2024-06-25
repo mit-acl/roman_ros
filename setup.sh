@@ -5,4 +5,4 @@ python_env=${2:-"segment_slam"}
 
 export SETUP_SEG_TRACK="source ~/.envs/$python_env/bin/activate && export PYTHONPATH=$PYTHONPATH:~/$ws_name/python"
 export SEG_TRACK_WS="~/$ws_name"
-export FASTSAM_WEIGHTS_PATH="~/$ws_name/python/FastSAM/weights/FastSAM.pt"
+export FASTSAM_WEIGHTS_PATH="~/$ws_name/src/FastSAM/weights/FastSAM.pt"
