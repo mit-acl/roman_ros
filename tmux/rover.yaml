@@ -1,0 +1,36 @@
+session_name: segment_tracking
+
+environment:
+  RUN_NAME: "0"
+  ROBOT_NAME: "$VEHTYPE$VEHNUM"
+  # OUTPUT_FILE: "/home/swarm/segment_slam_ws/src/segment_slam/database/${VEHTYPE}${VEHNUM}_latest_map.json"
+  RECORD: "true"
+  BAG_DIR: "/home/swarm/dataset/segment_slam"
+  #SEG_TRACK_WS: "/home/yulun/catkin_ws"
+  #FASTSAM_WEIGHTS_PATH: "/home/yulun/Models/fastsam/FastSAM-x.pt"
+  
+
+options:
+  default-command: /bin/bash
+
+windows:
+- window_name: segment_slam
+  layout: tiled
+  shell_command_before:
+    - source ~/segment_slam_ws/src/segment_track_ros/setup.sh
+    - $SETUP_SEG_TRACK
+    - source $SEG_TRACK_WS/devel/setup.bash
+  panes:
+  - roslaunch segment_track_ros rover.launch robot:=$ROBOT_NAME start_rviz:=false seg_viz:=false
+  # - roslaunch segment_slam slam.launch robot_name:=$ROBOT_NAME 
+  #   odom_topic:="odometry"
+  #   run_localization:=False
+  #   verbose:=False 
+  #   output_file:=$OUTPUT_FILE --wait
+  - if $RECORD; then
+    cd $BAG_DIR; 
+    sleep 5;
+    rosbag record -o $RUN_NAME /tf_static /$ROBOT_NAME/odometry /$ROBOT_NAME/l515/color/camera_info 
+      /$ROBOT_NAME/l515/color/image_raw/compressed  /$ROBOT_NAME/aligned_depth_to_color/camera_info 
+      /$ROBOT_NAME/l515/aligned_depth_to_color/image_raw;
+    fi; 
