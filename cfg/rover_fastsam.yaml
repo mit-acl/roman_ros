@@ -1,0 +1,10 @@
+fastsam_weights: "$FASTSAM_WEIGHTS_PATH"
+fastsam_imgsz: 256
+# fastsam_imgsz: 512
+fastsam_device: "cpu"
+fastsam_mask_downsample: 8
+fastsam_ignore_people: False
+fastsam_allow_edges: True
+fastsam_min_area_div: 30
+fastsam_max_area_div: 3
+fastsam_erosion_size: 3
