@@ -14,6 +14,7 @@ import message_filters
 import tf2_ros
 
 # ROS msgs
+import std_msgs.msg as std_msgs
 import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
@@ -36,7 +37,6 @@ class SegmentTrackerNode():
 
         # ros params
         self.robot_id = rospy.get_param("~robot_id", 0)
-        pixel_std_dev = rospy.get_param("~pixel_std_dev", 20.0)
         min_iou = rospy.get_param("~min_iou", 0.25)
         min_sightings = rospy.get_param("~min_sightings", 5)
         max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.5)
@@ -50,7 +50,8 @@ class SegmentTrackerNode():
             self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
         if self.output_file is not None and self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
-            self.poses = [] # list of poses
+            self.pose_history = [] # list of poses
+            self.time_history = []
             rospy.loginfo(f"Output file: {self.output_file}")
         elif self.output_file == "":
             self.output_file = None
@@ -62,7 +63,6 @@ class SegmentTrackerNode():
 
         self.tracker = Tracker(
             camera_params=color_params,
-            pixel_std_dev=pixel_std_dev,
             min_iou=min_iou,
             min_sightings=min_sightings,
             max_t_no_sightings=max_t_no_sightings,
@@ -78,6 +78,7 @@ class SegmentTrackerNode():
 
         # ros publishers
         self.segments_pub = rospy.Publisher("segment_track/segment_updates", segment_slam_msgs.Segment, queue_size=5)
+        self.pulse_pub = rospy.Publisher("segment_track/pulse", std_msgs.Empty, queue_size=1)
 
         # visualization
         if self.visualize:
@@ -117,19 +118,23 @@ class SegmentTrackerNode():
         t = observations[0].time
         assert all([obs.time == t for obs in observations])
 
-        graveyard_ids = [segment.id for segment in self.tracker.segment_graveyard]
+        inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
         self.tracker.update(obs_array_msg.header.stamp.to_sec(), rnp.numpify(obs_array_msg.pose), observations)
-        updated_graveyard_ids = [segment.id for segment in self.tracker.segment_graveyard]
-        new_graveyard_ids = [seg_id for seg_id in updated_graveyard_ids if seg_id not in graveyard_ids]
+        updated_inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
+        new_inactive_ids = [seg_id for seg_id in updated_inactive_ids if seg_id not in inactive_ids]
 
         # publish segments
         segment: Segment
-        for segment in self.tracker.segment_graveyard:
-            if segment.last_seen == t or segment.id in new_graveyard_ids:
+        for segment in self.tracker.inactive_segments:
+            if segment.last_seen == t or segment.id in new_inactive_ids:
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
         
         if self.output_file is not None:
-            self.poses.append(rnp.numpify(obs_array_msg.pose))
+            self.pose_history.append(rnp.numpify(obs_array_msg.pose))
+            self.time_history.append(t)
+
+        # publish pulse
+        self.pulse_pub.publish(std_msgs.Empty())
 
     def viz_cb(self, odom_msg, img_msg):
         """
@@ -144,9 +149,9 @@ class SegmentTrackerNode():
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
         
         segment: Segment
-        for i, segment in enumerate(self.tracker.segments + self.tracker.segment_graveyard):
+        for i, segment in enumerate(self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard):
             # only draw segments seen in the last however many seconds
-            if segment.last_seen < t - 50:
+            if segment.last_seen < t - self.tracker.segment_graveyard_time - 10:
                 continue
             try:
                 bbox = segment.reprojected_bbox(pose @ self.T_BC)
@@ -156,8 +161,10 @@ class SegmentTrackerNode():
                 continue
             if i < len(self.tracker.segments):
                 color = (0, 255, 0)
-            else:
+            elif i < len(self.tracker.segments) + len(self.tracker.inactive_segments):
                 color = (255, 0, 0)
+            else:
+                color = (180, 0, 180)
             img = cv.rectangle(img, np.array([bbox[0][0], bbox[0][1]]).astype(np.int32), 
                         np.array([bbox[1][0], bbox[1][1]]).astype(np.int32), color=color, thickness=2)
             img = cv.putText(img, str(segment.id), (np.array(bbox[0]) + np.array([10., 10.])).astype(np.int32), 
@@ -175,7 +182,9 @@ class SegmentTrackerNode():
         points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
         
 
-        most_recently_seen_segments = sorted(self.tracker.segments + self.tracker.segment_graveyard, key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
+        most_recently_seen_segments = sorted(
+            self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard, 
+            key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
 
         for segment in most_recently_seen_segments:
             # color
@@ -196,8 +205,9 @@ class SegmentTrackerNode():
     
     def shutdown(self):
         if self.output_file is not None:
+            self.tracker.make_pickle_compatible()
             pkl_file = open(self.output_file, 'wb')
-            pickle.dump([self.tracker, self.poses], pkl_file, -1)
+            pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
             pkl_file.close()
 
 def main():

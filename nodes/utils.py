@@ -22,9 +22,6 @@ def observation_from_msg(observation_msg: segment_slam_msgs.Observation):
     observation = Observation(
         time=observation_msg.stamp.to_sec(),
         pose=rnp.numpify(observation_msg.pose),
-        pixel=np.array(observation_msg.pixel),
-        width=observation_msg.mask_width,
-        height=observation_msg.mask_height,
         mask=np.array(observation_msg.mask).reshape(
             (observation_msg.img_height, observation_msg.img_width)
         ) if observation_msg.mask else None,
@@ -53,11 +50,8 @@ def observation_to_msg(observation: Observation):
             position=rnp.msgify(geometry_msgs.Point, observation.pose[:3,3]),
             orientation=rnp.msgify(geometry_msgs.Quaternion, Rot.from_matrix(observation.pose[:3,:3]).as_quat())
         ),
-        pixel=observation.pixel.tolist(),
         img_width=int(observation.mask_downsampled.shape[1]),
         img_height=int(observation.mask_downsampled.shape[0]),
-        mask_width=int(observation.width),
-        mask_height=int(observation.height),
         mask=observation.mask_downsampled.flatten().astype(np.int8).tolist() if observation.mask is not None else None,
         point_cloud=(observation.point_cloud.flatten().tolist() 
                      if observation.point_cloud is not None else None),
