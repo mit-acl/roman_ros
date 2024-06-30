@@ -82,6 +82,8 @@ class SegmentTrackerNode():
 
         # visualization
         if self.visualize:
+            self.min_viz_dt = 0.2
+            self.last_viz_t = -np.inf
             if self.cam_frame_id is not None:
                 tf_buffer = tf2_ros.Buffer()
                 tf_listener = tf2_ros.TransformListener(tf_buffer)
@@ -141,8 +143,13 @@ class SegmentTrackerNode():
         Triggered by incoming odometry and image messages
         """
 
-        rospy.logwarn("Received messages")
+        # rospy.logwarn("Received messages")
         t = img_msg.header.stamp.to_sec()
+        if t - self.last_viz_t < self.min_viz_dt:
+            return
+        else:
+            self.last_viz_t = t
+
         pose = rnp.numpify(odom_msg.pose.pose)
 
         # conversion from ros msg to cv img

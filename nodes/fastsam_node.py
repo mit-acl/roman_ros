@@ -50,6 +50,8 @@ class FastSAMNode():
         fastsam_min_area_div = rospy.get_param("~fastsam_min_area_div")
         fastsam_max_area_div = rospy.get_param("~fastsam_max_area_div")
         fastsam_erosion_size = rospy.get_param("~fastsam_erosion_size")
+        self.min_dt = rospy.get_param("~fastsam_min_dt", 0.1)
+        self.last_t = -np.inf
 
         self.visualize = rospy.get_param("~fastsam_viz", False)
 
@@ -122,10 +124,17 @@ class FastSAMNode():
         This function gets called every time synchronized odometry, image message, and 
         depth image message are received.
         """
+        
         rospy.loginfo("Received messages")
         odom_msg, img_msg, depth_msg = msgs
         t = img_msg.header.stamp.to_sec()
         pose = rnp.numpify(odom_msg.pose.pose).astype(np.float64) @ self.T_BC
+
+        # check that enough time has passed since last observation (to not overwhelm GPU)
+        if t - self.last_t < self.min_dt:
+            return
+        else:
+            self.last_t = t
 
         # conversion from ros msg to cv img
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
