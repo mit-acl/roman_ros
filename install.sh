@@ -43,6 +43,7 @@ git clone git@gitlab.com:mit-acl/sparse_mapping/segment_track.git
 # cd segment_track && git checkout mason/dev && cd ..
 pip install -e segment_track
 git clone https://github.com/CASIA-IVA-Lab/FastSAM.git
+cd FastSAM && git checkout 4d153e9 && cd ..
 pip install -e FastSAM
 wget -P FastSAM/weights https://huggingface.co/spaces/An-619/FastSAM/resolve/main/weights/FastSAM.pt
 popd
