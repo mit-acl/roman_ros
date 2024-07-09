@@ -48,6 +48,7 @@ class SegmentTrackerNode():
             self.map_frame_id = rospy.get_param("~map_frame_id", "map")
             self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
             self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
+            self.min_viz_dt = rospy.get_param("~viz/min_viz_dt", 2.0)
         if self.output_file is not None and self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
             self.pose_history = [] # list of poses
@@ -57,9 +58,10 @@ class SegmentTrackerNode():
             self.output_file = None
 
         # tracker
-        rospy.loginfo("Waiting for color camera info messages...")
+        rospy.loginfo("SegmentTrackerNode waiting for color camera info messages...")
         color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
         color_params = CameraParams.from_msg(color_info_msg)
+        rospy.loginfo("SegmentTrackerNode received for color camera info messages...")
 
         self.tracker = Tracker(
             camera_params=color_params,
@@ -82,7 +84,6 @@ class SegmentTrackerNode():
 
         # visualization
         if self.visualize:
-            self.min_viz_dt = 0.2
             self.last_viz_t = -np.inf
             if self.cam_frame_id is not None:
                 tf_buffer = tf2_ros.Buffer()
@@ -110,6 +111,9 @@ class SegmentTrackerNode():
         """
         Triggered by incoming observation messages
         """
+        # publish pulse
+        self.pulse_pub.publish(std_msgs.Empty())
+        
         if len(obs_array_msg.observations) == 0:
             return
         
@@ -134,9 +138,6 @@ class SegmentTrackerNode():
         if self.output_file is not None:
             self.pose_history.append(rnp.numpify(obs_array_msg.pose))
             self.time_history.append(t)
-
-        # publish pulse
-        self.pulse_pub.publish(std_msgs.Empty())
 
     def viz_cb(self, odom_msg, img_msg):
         """
@@ -225,4 +226,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
