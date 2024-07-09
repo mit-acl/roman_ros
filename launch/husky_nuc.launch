@@ -4,25 +4,26 @@
   <arg name="start_rviz" default="true"/>
   <arg name="rviz_path" default="$(find segment_track_ros)/rviz/$(arg robot).rviz"/>
   <arg name="seg_viz" default="true"/>
+  <arg name="output_segtrack" default=""/>
 
   <group ns="$(arg robot)" >
 
-    <remap from="color/image_raw" to="forward/color/image_raw" />
+    <remap from="color/image_raw" to="forward/color/image_rect_color" />
     <remap from="color/camera_info" to="forward/color/camera_info" />
-    <remap from="depth/image_raw" to="forward/aligned_depth_to_color/image_raw" />
-    <remap from="depth/camera_info" to="forward/aligned_depth_to_color/camera_info" />
+    <remap from="depth/image_raw" to="forward/depth/image_rect_raw" />
+    <remap from="depth/camera_info" to="forward/depth/camera_info" />
     <remap from="odom" to="locus/odometry" />
     
     <node respawn="false" name="fastsam_node" pkg="segment_track_ros" type="fastsam_node.py" output="screen">
         <rosparam command="load" file="$(find segment_track_ros)/cfg/default_fastsam.yaml" />
         <param name="cam_frame_id" value="hamilton/forward_color_optical_frame" />
-        <param name="map_frame_id" value="hamilton/odom" />
     </node>
 
     <node respawn="false" name="segment_track_node" pkg="segment_track_ros" type="segment_track_node.py" output="screen">
         <param name="visualize" value="$(arg seg_viz)" />
         <param name="cam_frame_id" value="hamilton/forward_color_optical_frame" />
         <param name="map_frame_id" value="hamilton/odom" />
+        <param name="output_segtrack" value="$(arg output_segtrack)" />
     </node>
   
   </group>
