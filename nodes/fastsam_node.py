@@ -66,8 +66,10 @@ class FastSAMNode():
         # FastSAM set up after camera info can be retrieved
         rospy.loginfo("Waiting for depth camera info messages...")
         depth_info_msg = rospy.wait_for_message("depth/camera_info", sensor_msgs.CameraInfo)
+        rospy.loginfo("Received for depth camera info messages...")
         rospy.loginfo("Waiting for color camera info messages...")
         color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
+        rospy.loginfo("Received for color camera info messages...")
         self.depth_params = CameraParams.from_msg(depth_info_msg)
         color_params = CameraParams.from_msg(color_info_msg)
         
@@ -90,25 +92,15 @@ class FastSAMNode():
 
     def setup_ros(self):
 
-        # tf2 listener
-        if self.cam_frame_id is not None:
-            tf_buffer = tf2_ros.Buffer()
-            tf_listener = tf2_ros.TransformListener(tf_buffer)
-            odom_msg = rospy.wait_for_message("odom", nav_msgs.Odometry)
-            transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
-            self.T_BC = rnp.numpify(transform_stamped_msg.transform)
-        else:
-            self.T_BC = np.eye(4)
-        # except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-        #     print("Didn't find tf.")
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
         # ros subscribers
         subs = [
-            message_filters.Subscriber("odom", nav_msgs.Odometry),
             message_filters.Subscriber("color/image_raw", sensor_msgs.Image),
             message_filters.Subscriber("depth/image_raw", sensor_msgs.Image),
         ]
-        self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=20, slop=.1)
+        self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=10, slop=.1)
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
@@ -126,9 +118,15 @@ class FastSAMNode():
         """
         
         rospy.loginfo("Received messages")
-        odom_msg, img_msg, depth_msg = msgs
+        img_msg, depth_msg = msgs
+        try:
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            rospy.logwarn("tf lookup failed")
+            return
         t = img_msg.header.stamp.to_sec()
-        pose = rnp.numpify(odom_msg.pose.pose).astype(np.float64) @ self.T_BC
+        
+        pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
 
         # check that enough time has passed since last observation (to not overwhelm GPU)
         if t - self.last_t < self.min_dt:
