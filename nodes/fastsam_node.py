@@ -100,7 +100,7 @@ class FastSAMNode():
             message_filters.Subscriber("color/image_raw", sensor_msgs.Image),
             message_filters.Subscriber("depth/image_raw", sensor_msgs.Image),
         ]
-        self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=10, slop=.1)
+        self.ts = message_filters.TimeSynchronizer(subs, queue_size=10)
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
@@ -120,9 +120,11 @@ class FastSAMNode():
         rospy.loginfo("Received messages")
         img_msg, depth_msg = msgs
         try:
-            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp)
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
             rospy.logwarn("tf lookup failed")
+            print(ex)
             return
         t = img_msg.header.stamp.to_sec()
         
