@@ -21,7 +21,7 @@ import sensor_msgs.msg as sensor_msgs
 import segment_slam_msgs.msg as segment_slam_msgs
 
 # robot_utils
-from robot_utils.camera import CameraParams
+from robotdatapy.camera import CameraParams
 
 # segment_track
 from segment_track.fastsam_wrapper import FastSAMWrapper
@@ -49,6 +49,7 @@ class SegmentTrackerNode():
             self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
             self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
             self.min_viz_dt = rospy.get_param("~viz/min_viz_dt", 2.0)
+            self.viz_rotate_img = rospy.get_param("~viz/rotate_img", None)
         if self.output_file is not None and self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
             self.pose_history = [] # list of poses
@@ -177,6 +178,14 @@ class SegmentTrackerNode():
                         np.array([bbox[1][0], bbox[1][1]]).astype(np.int32), color=color, thickness=2)
             img = cv.putText(img, str(segment.id), (np.array(bbox[0]) + np.array([10., 10.])).astype(np.int32), 
                             cv.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+        if self.viz_rotate_img is not None:
+            if self.viz_rotate_img == "CW":
+                img = cv.rotate(img, cv.ROTATE_90_CLOCKWISE)
+            elif self.viz_rotate_img == "CCW":
+                img = cv.rotate(img, cv.ROTATE_90_COUNTERCLOCKWISE)
+            elif self.viz_rotate_img == "180":
+                img = cv.rotate(img, cv.ROTATE_180)
         
         img_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
         self.annotated_img_pub.publish(img_msg)

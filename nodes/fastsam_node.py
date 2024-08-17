@@ -20,7 +20,7 @@ import sensor_msgs.msg as sensor_msgs
 import segment_slam_msgs.msg as segment_slam_msgs
 
 # robot_utils
-from robot_utils.camera import CameraParams
+from robotdatapy.camera import CameraParams
 
 # segment_track
 from segment_track.fastsam_wrapper import FastSAMWrapper
@@ -44,6 +44,7 @@ class FastSAMNode():
         fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
         fastsam_device = rospy.get_param("~fastsam_device")
         fastsam_mask_downsample = rospy.get_param("~fastsam_mask_downsample")
+        fastsam_rotate_img = rospy.get_param("~fastsam_rotate_img", None)
 
         fastsam_ignore_people = rospy.get_param("~fastsam_ignore_people")
         fastsam_allow_edges = rospy.get_param("~fastsam_allow_edges")
@@ -60,7 +61,8 @@ class FastSAMNode():
             weights=os.path.expanduser(os.path.expandvars(fastsam_weights_path)),
             imgsz=fastsam_imgsz,
             device=fastsam_device,
-            mask_downsample_factor=fastsam_mask_downsample
+            mask_downsample_factor=fastsam_mask_downsample,
+            rotate_img=fastsam_rotate_img
         )
 
         # FastSAM set up after camera info can be retrieved
