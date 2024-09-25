@@ -1,6 +1,6 @@
 # Segment Track ROS
 
-Bula vinaka.
+This is ROS wrapper code for running `segment_track` in real-time.
 
 # Install
 
@@ -19,3 +19,8 @@ SEG_TRACK_WS # path to ROS workspace containing segment_track_ros
 ```
 
 `tmuxp load ./tmux/offline_jackal.yaml`
+
+---
+
+This research is supported by Ford Motor Company, DSTA, ONR, and
+ARL DCIST under Cooperative Agreement Number W911NF-17-2-0181.
