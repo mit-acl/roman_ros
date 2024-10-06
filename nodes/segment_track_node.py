@@ -38,8 +38,8 @@ class SegmentTrackerNode():
         # ros params
         self.robot_id = rospy.get_param("~robot_id", 0)
         min_iou = rospy.get_param("~min_iou", 0.25)
-        min_sightings = rospy.get_param("~min_sightings", 5)
-        max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.5)
+        min_sightings = rospy.get_param("~min_sightings", 2)
+        max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.25)
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
         self.output_file = rospy.get_param("~output_segtrack", None)
@@ -107,12 +107,14 @@ class SegmentTrackerNode():
 
         rospy.on_shutdown(self.shutdown)
         rospy.loginfo("Segment Tracker Node setup complete.")
+        rospy.loginfo("Waiting for observation.")
 
     def obs_cb(self, obs_array_msg):
         """
         Triggered by incoming observation messages
         """
         # publish pulse
+        rospy.logwarn("Received messages")
         self.pulse_pub.publish(std_msgs.Empty())
         
         if len(obs_array_msg.observations) == 0:
@@ -221,7 +223,10 @@ class SegmentTrackerNode():
         return
     
     def shutdown(self):
+        if self.output_file is None:
+            print(f"No file to save to.")
         if self.output_file is not None:
+            print(f"Saving map to {self.output_file}...")
             self.tracker.make_pickle_compatible()
             pkl_file = open(self.output_file, 'wb')
             pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
