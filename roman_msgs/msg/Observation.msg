@@ -1,0 +1,9 @@
+time stamp
+geometry_msgs/Pose pose
+float64[2] pixel
+int32 mask_width
+int32 mask_height
+int32 img_width
+int32 img_height
+int8[] mask
+float64[] point_cloud

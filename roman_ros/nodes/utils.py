@@ -4,17 +4,17 @@ from scipy.spatial.transform import Rotation as Rot
 import rospy
 import ros_numpy as rnp
 
-from segment_track.observation import Observation
-from segment_track.segment import Segment
-import segment_slam_msgs.msg as segment_slam_msgs
+from roman.map.observation import Observation
+from roman.object.segment import Segment
+import roman_msgs.msg as roman_msgs
 import geometry_msgs.msg as geometry_msgs
 
-def observation_from_msg(observation_msg: segment_slam_msgs.Observation):
+def observation_from_msg(observation_msg: roman_msgs.Observation):
     """
     Convert observation message to observation data class
 
     Args:
-        observation_msg (segment_slam_msgs.Observation): observation message
+        observation_msg (roman_msgs.Observation): observation message
 
     Returns:
         Observation: observation data class
@@ -42,9 +42,9 @@ def observation_to_msg(observation: Observation):
         observation (Observation): observation data class
 
     Returns:
-        segment_slam_msgs.Observation: observation message
+        roman_msgs.Observation: observation message
     """
-    observation_msg = segment_slam_msgs.Observation(
+    observation_msg = roman_msgs.Observation(
         stamp=rospy.Time.from_sec(observation.time),
         pose=geometry_msgs.Pose(
             position=rnp.msgify(geometry_msgs.Point, observation.pose[:3,3]),
@@ -76,10 +76,10 @@ def segment_to_msg(robot_id: int, segment: Segment):
         segment (Segment): segment data class
 
     Returns:
-        segment_slam_msgs.Segment: segment message
+        roman_msgs.Segment: segment message
     """
     e = object.normalized_eigenvalues()
-    segment_msg = segment_slam_msgs.Segment(
+    segment_msg = roman_msgs.Segment(
         header=rospy.Header(stamp=rospy.Time.from_sec(segment.last_seen)),
         robot_id=robot_id,
         segment_id=segment.id,

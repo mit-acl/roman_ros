@@ -17,13 +17,13 @@ import tf2_ros
 import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
-import segment_slam_msgs.msg as segment_slam_msgs
+import roman_msgs.msg as roman_msgs
 
 # robot_utils
 from robotdatapy.camera import CameraParams
 
-# segment_track
-from segment_track.fastsam_wrapper import FastSAMWrapper
+# ROMAN
+from roman.map.fastsam_wrapper import FastSAMWrapper
 
 # relative
 from utils import observation_to_msg
@@ -106,10 +106,10 @@ class FastSAMNode():
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
-        self.obs_pub = rospy.Publisher("segment_track/observations", segment_slam_msgs.ObservationArray, queue_size=5)
+        self.obs_pub = rospy.Publisher("roman/observations", roman_msgs.ObservationArray, queue_size=5)
 
         if self.visualize:
-            self.ptcld_pub = rospy.Publisher("segment_track/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
+            self.ptcld_pub = rospy.Publisher("roman/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
 
         rospy.loginfo("FastSAM node setup complete.")
 
@@ -146,7 +146,7 @@ class FastSAMNode():
 
         observation_msgs = [observation_to_msg(obs) for obs in observations]
         
-        observation_array = segment_slam_msgs.ObservationArray(
+        observation_array = roman_msgs.ObservationArray(
             header=img_msg.header,
             pose=rnp.msgify(geometry_msgs.Pose, pose),
             observations=observation_msgs
