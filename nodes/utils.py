@@ -78,13 +78,15 @@ def segment_to_msg(robot_id: int, segment: Segment):
     Returns:
         segment_slam_msgs.Segment: segment message
     """
+    e = segment.normalized_eigenvalues()
     segment_msg = segment_slam_msgs.Segment(
         header=rospy.Header(stamp=rospy.Time.from_sec(segment.last_seen)),
         robot_id=robot_id,
         segment_id=segment.id,
         position=rnp.msgify(geometry_msgs.Point, centroid_from_segment(segment)),
         # volume=estimate_volume(segment.points) if segment.points is not None else 0.0,
-        volume=segment.volume()
+        volume=segment.volume(),
+        shape_attributes=[segment.volume(), segment.linearity(e), segment.planarity(e), segment.scattering(e)]
     )
     return segment_msg
 
@@ -99,8 +101,7 @@ def centroid_from_segment(segment: Segment):
         np.array, shape=(3,): representative point
     """
     if segment.points is not None:
-        pt = np.median(segment.points, axis=0)
-        pt[2] = np.min(segment.points[:,2])
+        pt = np.mean(segment.points, axis=0)
         return pt
     else:
         return None
