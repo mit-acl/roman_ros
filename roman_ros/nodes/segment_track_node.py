@@ -139,7 +139,7 @@ class SegmentTrackerNode():
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
         
         if self.output_file is not None:
-            self.pose_history.append(rnp.numpify(obs_array_msg.pose))
+            self.pose_history.append(rnp.numpify(obs_array_msg.pose_flu))
             self.time_history.append(t)
 
     def viz_cb(self, odom_msg, img_msg):

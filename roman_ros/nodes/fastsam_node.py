@@ -39,6 +39,7 @@ class FastSAMNode():
         # self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
         self.cam_frame_id = rospy.get_param("~cam_frame_id", None)
         self.map_frame_id = rospy.get_param("~map_frame_id", "map")
+        self.odom_base_frame_id = rospy.get_param("~odom_base_frame_id", "base")
         
         fastsam_weights_path = rospy.get_param("~fastsam_weights")
         fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
@@ -124,6 +125,7 @@ class FastSAMNode():
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
             transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
+            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
             rospy.logwarn("tf lookup failed")
             print(ex)
@@ -131,6 +133,7 @@ class FastSAMNode():
         t = img_msg.header.stamp.to_sec()
         
         pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
+        pose_flu = rnp.numpify(flu_transformed_stamped_msg.transform).astype(np.float64)
 
         # check that enough time has passed since last observation (to not overwhelm GPU)
         if t - self.last_t < self.min_dt:
@@ -149,6 +152,7 @@ class FastSAMNode():
         observation_array = roman_msgs.ObservationArray(
             header=img_msg.header,
             pose=rnp.msgify(geometry_msgs.Pose, pose),
+            pose_flu=rnp.msgify(geometry_msgs.Pose, pose_flu),
             observations=observation_msgs
         )
         self.obs_pub.publish(observation_array)
