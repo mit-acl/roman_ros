@@ -6,6 +6,7 @@ import ros_numpy as rnp
 import cv2 as cv
 import struct
 import pickle
+import time
 
 # ROS imports
 import rospy
@@ -227,6 +228,7 @@ class SegmentTrackerNode():
             print(f"No file to save to.")
         if self.output_file is not None:
             print(f"Saving map to {self.output_file}...")
+            time.sleep(5.0)
             self.tracker.make_pickle_compatible()
             pkl_file = open(self.output_file, 'wb')
             pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
