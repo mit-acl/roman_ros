@@ -78,7 +78,7 @@ def segment_to_msg(robot_id: int, segment: Segment):
     Returns:
         roman_msgs.Segment: segment message
     """
-    e = object.normalized_eigenvalues()
+    e = segment.normalized_eigenvalues()
     segment_msg = roman_msgs.Segment(
         header=rospy.Header(stamp=rospy.Time.from_sec(segment.last_seen)),
         robot_id=robot_id,
