@@ -1,6 +1,5 @@
 time stamp
 geometry_msgs/Pose pose
-geometry_msgs/Pose pose_flu
 float64[2] pixel
 int32 mask_width
 int32 mask_height
