@@ -6,6 +6,7 @@ import ros_numpy as rnp
 import cv2 as cv
 import struct
 import pickle
+import time
 
 # ROS imports
 import rospy
@@ -18,15 +19,15 @@ import std_msgs.msg as std_msgs
 import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
-import segment_slam_msgs.msg as segment_slam_msgs
+import roman_msgs.msg as roman_msgs
 
 # robot_utils
 from robotdatapy.camera import CameraParams
 
-# segment_track
-from segment_track.fastsam_wrapper import FastSAMWrapper
-from segment_track.tracker import Tracker
-from segment_track.segment import Segment
+# ROMAN
+from roman.map.fastsam_wrapper import FastSAMWrapper
+from roman.map.tracker import Tracker
+from roman.object.segment import Segment
 
 # relative
 from utils import observation_from_msg, segment_to_msg
@@ -77,11 +78,11 @@ class SegmentTrackerNode():
     def setup_ros(self):
         
         # ros subscribers
-        rospy.Subscriber("segment_track/observations", segment_slam_msgs.ObservationArray, self.obs_cb)
+        rospy.Subscriber("roman/observations", roman_msgs.ObservationArray, self.obs_cb)
 
         # ros publishers
-        self.segments_pub = rospy.Publisher("segment_track/segment_updates", segment_slam_msgs.Segment, queue_size=5)
-        self.pulse_pub = rospy.Publisher("segment_track/pulse", std_msgs.Empty, queue_size=1)
+        self.segments_pub = rospy.Publisher("roman/segment_updates", roman_msgs.Segment, queue_size=5)
+        self.pulse_pub = rospy.Publisher("roman/pulse", std_msgs.Empty, queue_size=1)
 
         # visualization
         if self.visualize:
@@ -102,8 +103,8 @@ class SegmentTrackerNode():
             ]
             self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=20, slop=.1)
             self.ts.registerCallback(self.viz_cb) # registers incoming messages to callback
-            self.annotated_img_pub = rospy.Publisher("segment_track/annotated_img", sensor_msgs.Image, queue_size=5)
-            self.object_points_pub = rospy.Publisher("segment_track/object_points", sensor_msgs.PointCloud, queue_size=5)
+            self.annotated_img_pub = rospy.Publisher("roman/annotated_img", sensor_msgs.Image, queue_size=5)
+            self.object_points_pub = rospy.Publisher("roman/object_points", sensor_msgs.PointCloud, queue_size=5)
 
         rospy.on_shutdown(self.shutdown)
         rospy.loginfo("Segment Tracker Node setup complete.")
@@ -139,7 +140,7 @@ class SegmentTrackerNode():
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
         
         if self.output_file is not None:
-            self.pose_history.append(rnp.numpify(obs_array_msg.pose))
+            self.pose_history.append(rnp.numpify(obs_array_msg.pose_flu))
             self.time_history.append(t)
 
     def viz_cb(self, odom_msg, img_msg):
@@ -227,6 +228,7 @@ class SegmentTrackerNode():
             print(f"No file to save to.")
         if self.output_file is not None:
             print(f"Saving map to {self.output_file}...")
+            time.sleep(5.0)
             self.tracker.make_pickle_compatible()
             pkl_file = open(self.output_file, 'wb')
             pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)

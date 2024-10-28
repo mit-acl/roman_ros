@@ -17,13 +17,13 @@ import tf2_ros
 import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
-import segment_slam_msgs.msg as segment_slam_msgs
+import roman_msgs.msg as roman_msgs
 
 # robot_utils
 from robotdatapy.camera import CameraParams
 
-# segment_track
-from segment_track.fastsam_wrapper import FastSAMWrapper
+# ROMAN
+from roman.map.fastsam_wrapper import FastSAMWrapper
 
 # relative
 from utils import observation_to_msg
@@ -39,6 +39,7 @@ class FastSAMNode():
         # self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
         self.cam_frame_id = rospy.get_param("~cam_frame_id", None)
         self.map_frame_id = rospy.get_param("~map_frame_id", "map")
+        self.odom_base_frame_id = rospy.get_param("~odom_base_frame_id", "base")
         
         fastsam_weights_path = rospy.get_param("~fastsam_weights")
         fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
@@ -106,10 +107,10 @@ class FastSAMNode():
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
-        self.obs_pub = rospy.Publisher("segment_track/observations", segment_slam_msgs.ObservationArray, queue_size=5)
+        self.obs_pub = rospy.Publisher("roman/observations", roman_msgs.ObservationArray, queue_size=5)
 
         if self.visualize:
-            self.ptcld_pub = rospy.Publisher("segment_track/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
+            self.ptcld_pub = rospy.Publisher("roman/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
 
         rospy.loginfo("FastSAM node setup complete.")
 
@@ -124,6 +125,7 @@ class FastSAMNode():
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
             transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
+            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
             rospy.logwarn("tf lookup failed")
             print(ex)
@@ -131,6 +133,7 @@ class FastSAMNode():
         t = img_msg.header.stamp.to_sec()
         
         pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
+        pose_flu = rnp.numpify(flu_transformed_stamped_msg.transform).astype(np.float64)
 
         # check that enough time has passed since last observation (to not overwhelm GPU)
         if t - self.last_t < self.min_dt:
@@ -146,9 +149,10 @@ class FastSAMNode():
 
         observation_msgs = [observation_to_msg(obs) for obs in observations]
         
-        observation_array = segment_slam_msgs.ObservationArray(
+        observation_array = roman_msgs.ObservationArray(
             header=img_msg.header,
             pose=rnp.msgify(geometry_msgs.Pose, pose),
+            pose_flu=rnp.msgify(geometry_msgs.Pose, pose_flu),
             observations=observation_msgs
         )
         self.obs_pub.publish(observation_array)
