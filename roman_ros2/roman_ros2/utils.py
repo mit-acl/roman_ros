@@ -1,13 +1,22 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-import rospy
-import ros_numpy as rnp
+from builtin_interfaces.msg import Time
+import roman_msgs.msg as roman_msgs
+import geometry_msgs.msg as geometry_msgs
+import std_msgs.msg as std_msgs
+
+import ros2_numpy as rnp
 
 from roman.map.observation import Observation
 from roman.object.segment import Segment
-import roman_msgs.msg as roman_msgs
-import geometry_msgs.msg as geometry_msgs
+
+# Function to convert a float timestamp to ROS 2 Time
+def float_to_ros_time(float_time):
+    ros_time = Time()
+    ros_time.sec = int(float_time)
+    ros_time.nanosec = int((float_time % 1.0) * 1e9)
+    return ros_time
 
 def observation_from_msg(observation_msg: roman_msgs.Observation):
     """
@@ -45,7 +54,7 @@ def observation_to_msg(observation: Observation):
         roman_msgs.Observation: observation message
     """
     observation_msg = roman_msgs.Observation(
-        stamp=rospy.Time.from_sec(observation.time),
+        stamp=float_to_ros_time(observation.time),
         pose=geometry_msgs.Pose(
             position=rnp.msgify(geometry_msgs.Point, observation.pose[:3,3]),
             orientation=rnp.msgify(geometry_msgs.Quaternion, Rot.from_matrix(observation.pose[:3,:3]).as_quat())
@@ -80,7 +89,7 @@ def segment_to_msg(robot_id: int, segment: Segment):
     """
     e = segment.normalized_eigenvalues()
     segment_msg = roman_msgs.Segment(
-        header=rospy.Header(stamp=rospy.Time.from_sec(segment.last_seen)),
+        header=std_msgs.Header(stamp=float_to_ros_time(segment.last_seen)),
         robot_id=robot_id,
         segment_id=segment.id,
         position=rnp.msgify(geometry_msgs.Point, centroid_from_segment(segment)),

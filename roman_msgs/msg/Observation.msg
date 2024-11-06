@@ -1,4 +1,4 @@
-time stamp
+builtin_interfaces/Time stamp
 geometry_msgs/Pose pose
 float64[2] pixel
 int32 mask_width

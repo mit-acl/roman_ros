@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import numpy as np
 import os
 from scipy.spatial.transform import Rotation as Rot
@@ -7,10 +6,13 @@ import struct
 import open3d as o3d
 
 # ROS imports
-import ros_numpy as rnp
-import rospy
+import rclpy
+from rclpy.node import Node
 import cv_bridge
 import message_filters
+import ros2_numpy as rnp
+from rcl_interfaces.msg import ParameterDescriptor
+
 import tf2_ros
 
 # ROS msgs
@@ -26,36 +28,62 @@ from robotdatapy.camera import CameraParams
 from roman.map.fastsam_wrapper import FastSAMWrapper
 
 # relative
-from utils import observation_to_msg
+from roman_ros2.utils import observation_to_msg
 
-class FastSAMNode():
+class FastSAMNode(Node):
 
     def __init__(self):
+        super().__init__('fastsam_node')
         
         # internal variables
         self.bridge = cv_bridge.CvBridge()
 
-        # ros params
-        # self.T_BC = np.array(rospy.get_param("~T_BC", np.eye(4).tolist())).reshape((4, 4)).astype(np.float64)
-        self.cam_frame_id = rospy.get_param("~cam_frame_id", None)
-        self.map_frame_id = rospy.get_param("~map_frame_id", "map")
-        self.odom_base_frame_id = rospy.get_param("~odom_base_frame_id", "base")
-        
-        fastsam_weights_path = rospy.get_param("~fastsam_weights")
-        fastsam_imgsz = rospy.get_param("~fastsam_imgsz")
-        fastsam_device = rospy.get_param("~fastsam_device")
-        fastsam_mask_downsample = rospy.get_param("~fastsam_mask_downsample")
-        fastsam_rotate_img = rospy.get_param("~fastsam_rotate_img", None)
+        # required ros parameters
+        self.declare_parameter("fastsam_weights")
+        self.declare_parameter("fastsam_device")
 
-        fastsam_ignore_people = rospy.get_param("~fastsam_ignore_people")
-        fastsam_allow_edges = rospy.get_param("~fastsam_allow_edges")
-        fastsam_min_area_div = rospy.get_param("~fastsam_min_area_div")
-        fastsam_max_area_div = rospy.get_param("~fastsam_max_area_div")
-        fastsam_erosion_size = rospy.get_param("~fastsam_erosion_size")
-        self.min_dt = rospy.get_param("~fastsam_min_dt", 0.1)
+        # ros params
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ("cam_frame_id", None),
+                ("map_frame_id", "map"),
+                ("odom_base_frame_id", "base"),
+                ("fastsam_imgsz", 256),
+                ("fastsam_mask_downsample", 8),
+                ("fastsam_rotate_img", None),
+                ("fastsam_ignore_people", True),
+                ("fastsam_allow_edges", True),
+                ("fastsam_min_area_div", 30),
+                ("fastsam_max_area_div", 3),
+                ("fastsam_erosion_size", 3),
+                ("fastsam_min_dt", 0.1),
+                ("fastsam_viz", False),
+            ]
+        )
+
+        self.cam_frame_id = self.get_parameter("cam_frame_id").value
+        self.map_frame_id = self.get_parameter("map_frame_id").value
+        self.odom_base_frame_id = self.get_parameter("odom_base_frame_id").value
+        
+        fastsam_weights_path = self.get_parameter("fastsam_weights").value
+        fastsam_imgsz = self.get_parameter("fastsam_imgsz").value
+        fastsam_device = self.get_parameter("fastsam_device").value
+        fastsam_mask_downsample = self.get_parameter("fastsam_mask_downsample").value
+        fastsam_rotate_img = self.get_parameter("fastsam_rotate_img").value
+
+        fastsam_ignore_people = self.get_parameter("fastsam_ignore_people").value
+        fastsam_allow_edges = self.get_parameter("fastsam_allow_edges").value
+        fastsam_min_area_div = self.get_parameter("fastsam_min_area_div").value
+        fastsam_max_area_div = self.get_parameter("fastsam_max_area_div").value
+        fastsam_erosion_size = self.get_parameter("fastsam_erosion_size").value
+        self.min_dt = self.get_parameter("fastsam_min_dt").value
+
+        self.visualize = self.get_parameter("fastsam_viz").value
         self.last_t = -np.inf
 
-        self.visualize = rospy.get_param("~fastsam_viz", False)
+        assert fastsam_weights_path is not None, "fastsam_weights parameter must be set"
+        assert fastsam_device is not None, "fastsam_device parameter must be set"
 
         # fastsam wrapper
         self.fastsam = FastSAMWrapper(
@@ -67,12 +95,12 @@ class FastSAMNode():
         )
 
         # FastSAM set up after camera info can be retrieved
-        rospy.loginfo("Waiting for depth camera info messages...")
-        depth_info_msg = rospy.wait_for_message("depth/camera_info", sensor_msgs.CameraInfo)
-        rospy.loginfo("Received for depth camera info messages...")
-        rospy.loginfo("Waiting for color camera info messages...")
-        color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
-        rospy.loginfo("Received for color camera info messages...")
+        self.get_logger().info("Waiting for depth camera info messages...")
+        depth_info_msg = self._wait_for_message("depth/camera_info", sensor_msgs.CameraInfo)
+        self.get_logger().info("Received for depth camera info messages...")
+        self.get_logger().info("Waiting for color camera info messages...")
+        color_info_msg = self._wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
+        self.get_logger().info("Received for color camera info messages...")
         self.depth_params = CameraParams.from_msg(depth_info_msg)
         color_params = CameraParams.from_msg(color_info_msg)
         
@@ -93,26 +121,44 @@ class FastSAMNode():
 
         self.setup_ros()
 
+    def _wait_for_message(self, topic, msg_type):
+        """
+        Wait for a message on topic of type msg_type
+        """
+        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, 1)
+        
+        self._wait_for_message_msg = None
+        while self._wait_for_message_msg is None:
+            rclpy.spin_once(self)
+        msg = self._wait_for_message_msg
+        subscription.destroy()
+
+        return msg
+    
+    def _wait_for_message_cb(self, msg):
+        self._wait_for_message_msg = msg
+        return
+
     def setup_ros(self):
 
         self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
         # ros subscribers
         subs = [
-            message_filters.Subscriber("color/image_raw", sensor_msgs.Image),
-            message_filters.Subscriber("depth/image_raw", sensor_msgs.Image),
+            message_filters.Subscriber(sensor_msgs.Image, "color/image_raw"),
+            message_filters.Subscriber(sensor_msgs.Image, "depth/image_raw"),
         ]
         self.ts = message_filters.TimeSynchronizer(subs, queue_size=10)
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
-        self.obs_pub = rospy.Publisher("roman/observations", roman_msgs.ObservationArray, queue_size=5)
+        self.obs_pub = self.create_publisher(roman_msgs.ObservationArray, "roman/observations", queue_size=5)
 
         if self.visualize:
-            self.ptcld_pub = rospy.Publisher("roman/observations/ptcld", sensor_msgs.PointCloud, queue_size=5)
+            self.ptcld_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/observations/ptcld", queue_size=5)
 
-        rospy.loginfo("FastSAM node setup complete.")
+        self.get_logger().info("FastSAM node setup complete.")
 
     def cb(self, *msgs):
         """
@@ -120,14 +166,14 @@ class FastSAMNode():
         depth image message are received.
         """
         
-        rospy.loginfo("Received messages")
+        self.get_logger().info("Received messages")
         img_msg, depth_msg = msgs
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
             transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
             flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-            rospy.logwarn("tf lookup failed")
+            self.get_logger().warning("tf lookup failed")
             print(ex)
             return
         t = img_msg.header.stamp.to_sec()
@@ -185,9 +231,12 @@ class FastSAMNode():
 
 def main():
 
-    rospy.init_node('fastsam_node')
+    rclpy.init()
     node = FastSAMNode()
-    rospy.spin()
+    rclpy.spin(node)
+
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == "__main__":
     main()

@@ -9,10 +9,10 @@ import pickle
 import time
 
 # ROS imports
-import rospy
+import rclpy
+from rclpy.node import Node
 import cv_bridge
 import message_filters
-import tf2_ros
 
 # ROS msgs
 import std_msgs.msg as std_msgs
@@ -32,7 +32,7 @@ from roman.object.segment import Segment
 # relative
 from utils import observation_from_msg, segment_to_msg
 
-class SegmentTrackerNode():
+class RomanMapNode():
 
     def __init__(self):
 
@@ -60,10 +60,10 @@ class SegmentTrackerNode():
             self.output_file = None
 
         # tracker
-        rospy.loginfo("SegmentTrackerNode waiting for color camera info messages...")
+        rospy.loginfo("RomanMapNode waiting for color camera info messages...")
         color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
         color_params = CameraParams.from_msg(color_info_msg)
-        rospy.loginfo("SegmentTrackerNode received for color camera info messages...")
+        rospy.loginfo("RomanMapNode received for color camera info messages...")
 
         self.tracker = Tracker(
             camera_params=color_params,
@@ -237,7 +237,7 @@ class SegmentTrackerNode():
 def main():
 
     rospy.init_node('segment_tracker_node')
-    node = SegmentTrackerNode()
+    node = RomanMapNode()
     rospy.spin()
 
 if __name__ == "__main__":
