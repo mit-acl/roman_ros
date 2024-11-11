@@ -1,4 +1,4 @@
-fastsam_node:
+/**:
   ros__parameters:
     fastsam_weights: "$FASTSAM_WEIGHTS_PATH"
     fastsam_imgsz: 256

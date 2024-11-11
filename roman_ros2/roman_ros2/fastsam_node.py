@@ -12,6 +12,7 @@ import cv_bridge
 import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.qos import QoSProfile
 
 import tf2_ros
 
@@ -131,7 +132,7 @@ class FastSAMNode(Node):
         while self._wait_for_message_msg is None:
             rclpy.spin_once(self)
         msg = self._wait_for_message_msg
-        subscription.destroy()
+        # subscription.destroy()
 
         return msg
     
@@ -146,17 +147,17 @@ class FastSAMNode(Node):
         
         # ros subscribers
         subs = [
-            message_filters.Subscriber(sensor_msgs.Image, "color/image_raw"),
-            message_filters.Subscriber(sensor_msgs.Image, "depth/image_raw"),
+            message_filters.Subscriber(self, sensor_msgs.Image, "color/image_raw"),
+            message_filters.Subscriber(self, sensor_msgs.Image, "depth/image_raw"),
         ]
-        self.ts = message_filters.TimeSynchronizer(subs, queue_size=10)
+        self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=10, slop=0.1)
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
 
         # ros publishers
-        self.obs_pub = self.create_publisher(roman_msgs.ObservationArray, "roman/observations", queue_size=5)
+        self.obs_pub = self.create_publisher(roman_msgs.ObservationArray, "roman/observations", qos_profile=QoSProfile(depth=10))
 
         if self.visualize:
-            self.ptcld_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/observations/ptcld", queue_size=5)
+            self.ptcld_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/observations/ptcld")
 
         self.get_logger().info("FastSAM node setup complete.")
 
@@ -168,24 +169,27 @@ class FastSAMNode(Node):
         
         self.get_logger().info("Received messages")
         img_msg, depth_msg = msgs
-        try:
-            # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
-            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
-            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-            self.get_logger().warning("tf lookup failed")
-            print(ex)
-            return
-        t = img_msg.header.stamp.to_sec()
-        
-        pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
-        pose_flu = rnp.numpify(flu_transformed_stamped_msg.transform).astype(np.float64)
 
         # check that enough time has passed since last observation (to not overwhelm GPU)
+        t = rclpy.time.Time.from_msg(img_msg.header.stamp).nanoseconds * 1e-9
         if t - self.last_t < self.min_dt:
             return
         else:
             self.last_t = t
+
+        try:
+            # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=1.0))
+            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=0.1))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
+            self.get_logger().warning("tf lookup failed")
+            print(ex)
+            return       
+         
+        pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
+        pose_flu = rnp.numpify(flu_transformed_stamped_msg.transform).astype(np.float64)
+
+        
 
         # conversion from ros msg to cv img
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
@@ -203,31 +207,31 @@ class FastSAMNode(Node):
         )
         self.obs_pub.publish(observation_array)
 
-        if self.visualize:
-            self.pub_ptclds(observations, img_msg.header, depth)
+        # if self.visualize:
+        #     self.pub_ptclds(observations, img_msg.header, depth)
 
         return
     
-    def pub_ptclds(self, observations, header, depth):
-        points_msg = sensor_msgs.PointCloud()
-        points_msg.header = header
-        points_msg.header.frame_id = self.cam_frame_id
-        points_msg.points = []
-        points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
+    # def pub_ptclds(self, observations, header, depth):
+    #     points_msg = sensor_msgs.PointCloud()
+    #     points_msg.header = header
+    #     points_msg.header.frame_id = self.cam_frame_id
+    #     points_msg.points = []
+    #     points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
 
-        for i, obs in enumerate(observations):
-            # color
-            color_unpacked = np.random.rand(3)*256
-            color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
-            color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
+    #     for i, obs in enumerate(observations):
+    #         # color
+    #         color_unpacked = np.random.rand(3)*256
+    #         color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+    #         color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
             
-            points = obs.point_cloud
-            sampled_points = np.random.choice(len(points), min(len(points), 100), replace=True)
-            points = [points[i] for i in sampled_points]
-            points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
-            points_msg.channels[0].values += [color_packed for _ in points]
+    #         points = obs.point_cloud
+    #         sampled_points = np.random.choice(len(points), min(len(points), 100), replace=True)
+    #         points = [points[i] for i in sampled_points]
+    #         points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
+    #         points_msg.channels[0].values += [color_packed for _ in points]
         
-        self.ptcld_pub.publish(points_msg)
+    #     self.ptcld_pub.publish(points_msg)
 
 def main():
 
