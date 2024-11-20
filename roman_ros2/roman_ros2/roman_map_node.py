@@ -6,6 +6,7 @@ import cv2 as cv
 import struct
 import pickle
 import time
+import signal
 
 # ROS imports
 import rclpy
@@ -29,7 +30,8 @@ from robotdatapy.camera import CameraParams
 
 # ROMAN
 from roman.map.fastsam_wrapper import FastSAMWrapper
-from roman.map.tracker import Tracker
+from roman.map.mapper import Mapper, MapperParams
+from roman.map.map import ROMANMap
 from roman.object.segment import Segment
 
 # relative
@@ -91,12 +93,17 @@ class RomanMapNode(Node):
         color_params = CameraParams.from_msg(color_info_msg)
         self.get_logger().info("RomanMapNode received for color camera info messages...")
 
-        self.tracker = Tracker(
+        mapper_params = MapperParams(
             camera_params=color_params,
             min_iou=min_iou,
             min_sightings=min_sightings,
             max_t_no_sightings=max_t_no_sightings,
             mask_downsample_factor=mask_downsample_factor,
+            segment_voxel_size=0.2,
+            iou_voxel_size=0.5,
+        )
+        self.mapper = Mapper(
+           mapper_params
         )
 
         self.setup_ros()
@@ -142,14 +149,14 @@ class RomanMapNode(Node):
         t = observations[0].time
         assert all([obs.time == t for obs in observations])
 
-        inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
-        self.tracker.update(time_stamp_to_float(obs_array_msg.header.stamp), rnp.numpify(obs_array_msg.pose), observations)
-        updated_inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
+        inactive_ids = [segment.id for segment in self.mapper.inactive_segments]
+        self.mapper.update(time_stamp_to_float(obs_array_msg.header.stamp), rnp.numpify(obs_array_msg.pose), observations)
+        updated_inactive_ids = [segment.id for segment in self.mapper.inactive_segments]
         new_inactive_ids = [seg_id for seg_id in updated_inactive_ids if seg_id not in inactive_ids]
 
         # publish segments
         segment: Segment
-        for segment in self.tracker.inactive_segments:
+        for segment in self.mapper.inactive_segments:
             if segment.last_seen == t or segment.id in new_inactive_ids:
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
         
@@ -182,9 +189,9 @@ class RomanMapNode(Node):
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
         
         segment: Segment
-        for i, segment in enumerate(self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard):
+        for i, segment in enumerate(self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard):
             # only draw segments seen in the last however many seconds
-            if segment.last_seen < t - self.tracker.segment_graveyard_time - 10:
+            if segment.last_seen < t - self.mapper.params.segment_graveyard_time - 10:
                 continue
             try:
                 bbox = segment.reprojected_bbox(pose @ self.T_BC)
@@ -192,9 +199,9 @@ class RomanMapNode(Node):
                 continue
             if bbox is None:
                 continue
-            if i < len(self.tracker.segments):
+            if i < len(self.mapper.segments):
                 color = (0, 255, 0)
-            elif i < len(self.tracker.segments) + len(self.tracker.inactive_segments):
+            elif i < len(self.mapper.segments) + len(self.mapper.inactive_segments):
                 color = (255, 0, 0)
             else:
                 color = (180, 0, 180)
@@ -224,7 +231,7 @@ class RomanMapNode(Node):
         
 
         # most_recently_seen_segments = sorted(
-        #     self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard, 
+        #     self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
         #     key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
 
         # for segment in most_recently_seen_segments:
@@ -249,11 +256,18 @@ class RomanMapNode(Node):
             print(f"No file to save to.")
         if self.output_file is not None:
             print(f"Saving map to {self.output_file}...")
-            time.sleep(5.0)
-            self.tracker.make_pickle_compatible()
+            time.sleep(1.0)
+            self.mapper.make_pickle_compatible()
+            data = ROMANMap(
+                segments=self.mapper.get_segment_map(),
+                trajectory=self.pose_history,
+                times=self.time_history,
+                poses_are_flu=True
+            )
             pkl_file = open(self.output_file, 'wb')
-            pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
+            pickle.dump(data, pkl_file, -1)
             pkl_file.close()
+        self.destroy_node()
 
     def _wait_for_message(self, topic, msg_type):
         """
@@ -277,10 +291,13 @@ def main():
 
     rclpy.init()
     node = RomanMapNode()
-    rclpy.spin(node)
 
-    node.shutdown()
-    node.destroy_node()
+    # signal.signal(signal.SIGINT, node.shutdown)
+    try:
+        rclpy.spin(node)
+    except:
+        node.shutdown()
+
     rclpy.shutdown()
 
 if __name__ == "__main__":
