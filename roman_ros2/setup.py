@@ -22,7 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'fastsam_node.py = roman_ros2.fastsam_node:main',
-            'mapper_node.py = roman_ros2.mapper_node:main'
+            'roman_map_node.py = roman_ros2.roman_map_node:main'
         ],
     },
 )

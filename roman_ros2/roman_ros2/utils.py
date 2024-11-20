@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
+import rclpy
 from builtin_interfaces.msg import Time
 import roman_msgs.msg as roman_msgs
 import geometry_msgs.msg as geometry_msgs
@@ -18,6 +19,9 @@ def float_to_ros_time(float_time):
     ros_time.nanosec = int((float_time % 1.0) * 1e9)
     return ros_time
 
+def time_stamp_to_float(stamp):
+    return rclpy.time.Time.from_msg(stamp).nanoseconds * 1e-9
+
 def observation_from_msg(observation_msg: roman_msgs.Observation):
     """
     Convert observation message to observation data class
@@ -29,7 +33,7 @@ def observation_from_msg(observation_msg: roman_msgs.Observation):
         Observation: observation data class
     """
     observation = Observation(
-        time=observation_msg.stamp.to_sec(),
+        time=time_stamp_to_float(observation_msg.stamp),
         pose=rnp.numpify(observation_msg.pose),
         mask=np.array(observation_msg.mask).reshape(
             (observation_msg.img_height, observation_msg.img_width)

@@ -2,7 +2,6 @@
 
 import numpy as np
 import os
-import ros_numpy as rnp
 import cv2 as cv
 import struct
 import pickle
@@ -13,6 +12,10 @@ import rclpy
 from rclpy.node import Node
 import cv_bridge
 import message_filters
+import ros2_numpy as rnp
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.qos import QoSProfile
+import tf2_ros
 
 # ROS msgs
 import std_msgs.msg as std_msgs
@@ -30,40 +33,63 @@ from roman.map.tracker import Tracker
 from roman.object.segment import Segment
 
 # relative
-from utils import observation_from_msg, segment_to_msg
+from roman_ros2.utils import observation_from_msg, segment_to_msg, time_stamp_to_float
 
-class RomanMapNode():
+class RomanMapNode(Node):
 
     def __init__(self):
+        super().__init__('roman_map_node')
 
         # ros params
-        self.robot_id = rospy.get_param("~robot_id", 0)
-        min_iou = rospy.get_param("~min_iou", 0.25)
-        min_sightings = rospy.get_param("~min_sightings", 2)
-        max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.25)
-        mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
-        self.visualize = rospy.get_param("~visualize", False)
-        self.output_file = rospy.get_param("~output_segtrack", None)
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ("robot_id", 0),
+                ("min_iou", 0.25),
+                ("min_sightings", 2),
+                ("max_t_no_sightings", 0.25),
+                ("mask_downsample_factor", 8),
+                ("visualize", False),
+                ("output_map", None),
+                ("cam_frame_id", "camera_link"),
+                ("map_frame_id", "map"),
+                ("viz/num_objs", 20),
+                ("viz/pts_per_obj", 250),
+                ("viz/min_viz_dt", 2.0),
+                ("viz/rotate_img", None),
+                ("viz/pointcloud", False)
+            ]
+        )
+
+        self.robot_id = self.get_parameter("robot_id").value
+        min_iou = self.get_parameter("min_iou").value
+        min_sightings = self.get_parameter("min_sightings").value
+        max_t_no_sightings = self.get_parameter("max_t_no_sightings").value
+        mask_downsample_factor = self.get_parameter("mask_downsample_factor").value
+        self.visualize = self.get_parameter("visualize").value
+        self.output_file = self.get_parameter("output_map").value
         if self.visualize:
-            self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
-            self.map_frame_id = rospy.get_param("~map_frame_id", "map")
-            self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
-            self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
-            self.min_viz_dt = rospy.get_param("~viz/min_viz_dt", 2.0)
-            self.viz_rotate_img = rospy.get_param("~viz/rotate_img", None)
+            self.cam_frame_id = self.get_parameter("cam_frame_id").value
+            self.map_frame_id = self.get_parameter("map_frame_id").value
+            self.viz_num_objs = self.get_parameter("viz/num_objs").value
+            self.viz_pts_per_obj = self.get_parameter("viz/pts_per_obj").value
+            self.min_viz_dt = self.get_parameter("viz/min_viz_dt").value
+            self.viz_rotate_img = self.get_parameter("viz/rotate_img").value
+            self.viz_pointcloud = self.get_parameter("viz/pointcloud").value
         if self.output_file is not None and self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
-            self.pose_history = [] # list of poses
+            self.pose_history = []
             self.time_history = []
-            rospy.loginfo(f"Output file: {self.output_file}")
+            self.get_logger().info(f"Output file: {self.output_file}")
         elif self.output_file == "":
             self.output_file = None
 
-        # tracker
-        rospy.loginfo("RomanMapNode waiting for color camera info messages...")
-        color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
+        # mapper
+        self.get_logger().info("RomanMapNode setting up mapping...")
+        self.get_logger().info("RomanMapNode waiting for color camera info messages...")
+        color_info_msg = self._wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
         color_params = CameraParams.from_msg(color_info_msg)
-        rospy.loginfo("RomanMapNode received for color camera info messages...")
+        self.get_logger().info("RomanMapNode received for color camera info messages...")
 
         self.tracker = Tracker(
             camera_params=color_params,
@@ -78,44 +104,32 @@ class RomanMapNode():
     def setup_ros(self):
         
         # ros subscribers
-        rospy.Subscriber("roman/observations", roman_msgs.ObservationArray, self.obs_cb)
+        self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10)
 
         # ros publishers
-        self.segments_pub = rospy.Publisher("roman/segment_updates", roman_msgs.Segment, queue_size=5)
-        self.pulse_pub = rospy.Publisher("roman/pulse", std_msgs.Empty, queue_size=1)
+        self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_updates", qos_profile=10)
+        self.pulse_pub = self.create_publisher(std_msgs.Empty, "roman/pulse", qos_profile=10)
 
         # visualization
         if self.visualize:
             self.last_viz_t = -np.inf
-            if self.cam_frame_id is not None:
-                tf_buffer = tf2_ros.Buffer()
-                tf_listener = tf2_ros.TransformListener(tf_buffer)
-                odom_msg = rospy.wait_for_message("odom", nav_msgs.Odometry)
-                transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
-                self.T_BC = rnp.numpify(transform_stamped_msg.transform)
-            else:
-                self.T_BC = np.eye(4)
+            self.tf_buffer = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             
+            self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10)
             self.bridge = cv_bridge.CvBridge()
-            subs = [
-                message_filters.Subscriber("odom", nav_msgs.Odometry),
-                message_filters.Subscriber("color/image_raw", sensor_msgs.Image),
-            ]
-            self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=20, slop=.1)
-            self.ts.registerCallback(self.viz_cb) # registers incoming messages to callback
-            self.annotated_img_pub = rospy.Publisher("roman/annotated_img", sensor_msgs.Image, queue_size=5)
-            self.object_points_pub = rospy.Publisher("roman/object_points", sensor_msgs.PointCloud, queue_size=5)
+            self.annotated_img_pub = self.create_publisher(sensor_msgs.Image, "roman/annotated_img", qos_profile=10)
+            self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/object_points", qos_profile=10)
 
-        rospy.on_shutdown(self.shutdown)
-        rospy.loginfo("Segment Tracker Node setup complete.")
-        rospy.loginfo("Waiting for observation.")
+        self.get_logger().info("ROMAN Map Node setup complete.")
+        self.get_logger().info("Waiting for observation.")
 
     def obs_cb(self, obs_array_msg):
         """
         Triggered by incoming observation messages
         """
         # publish pulse
-        rospy.logwarn("Received messages")
+        self.get_logger().info("Received messages")
         self.pulse_pub.publish(std_msgs.Empty())
         
         if len(obs_array_msg.observations) == 0:
@@ -129,7 +143,7 @@ class RomanMapNode():
         assert all([obs.time == t for obs in observations])
 
         inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
-        self.tracker.update(obs_array_msg.header.stamp.to_sec(), rnp.numpify(obs_array_msg.pose), observations)
+        self.tracker.update(time_stamp_to_float(obs_array_msg.header.stamp), rnp.numpify(obs_array_msg.pose), observations)
         updated_inactive_ids = [segment.id for segment in self.tracker.inactive_segments]
         new_inactive_ids = [seg_id for seg_id in updated_inactive_ids if seg_id not in inactive_ids]
 
@@ -143,19 +157,26 @@ class RomanMapNode():
             self.pose_history.append(rnp.numpify(obs_array_msg.pose_flu))
             self.time_history.append(t)
 
-    def viz_cb(self, odom_msg, img_msg):
+    def viz_cb(self, img_msg):
         """
         Triggered by incoming odometry and image messages
         """
 
         # rospy.logwarn("Received messages")
-        t = img_msg.header.stamp.to_sec()
+        t = time_stamp_to_float(img_msg.header.stamp)
         if t - self.last_viz_t < self.min_viz_dt:
             return
         else:
             self.last_viz_t = t
 
-        pose = rnp.numpify(odom_msg.pose.pose)
+        try:
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=2.0))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
+            self.get_logger().warning("tf lookup failed")
+            print(ex)
+            return
+
+        pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
 
         # conversion from ros msg to cv img
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
@@ -194,32 +215,32 @@ class RomanMapNode():
         self.annotated_img_pub.publish(img_msg)
 
         # Point cloud publishing
-        points_msg = sensor_msgs.PointCloud()
-        points_msg.header = img_msg.header
-        points_msg.header.frame_id = self.map_frame_id
-        points_msg.points = []
-        # points_msg.channels = [sensor_msgs.ChannelFloat32(name=channel, values=[]) for channel in ['r', 'g', 'b']]
-        points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
+        # points_msg = sensor_msgs.PointCloud()
+        # points_msg.header = img_msg.header
+        # points_msg.header.frame_id = self.map_frame_id
+        # points_msg.points = []
+        # # points_msg.channels = [sensor_msgs.ChannelFloat32(name=channel, values=[]) for channel in ['r', 'g', 'b']]
+        # points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
         
 
-        most_recently_seen_segments = sorted(
-            self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard, 
-            key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
+        # most_recently_seen_segments = sorted(
+        #     self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard, 
+        #     key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
 
-        for segment in most_recently_seen_segments:
-            # color
-            np.random.seed(segment.id)
-            color_unpacked = np.random.rand(3)*256
-            color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
-            color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
+        # for segment in most_recently_seen_segments:
+        #     # color
+        #     np.random.seed(segment.id)
+        #     color_unpacked = np.random.rand(3)*256
+        #     color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+        #     color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
             
-            points = segment.points
-            sampled_points = np.random.choice(len(points), min(len(points), 1000), replace=True)
-            points = [points[i] for i in sampled_points]
-            points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
-            points_msg.channels[0].values += [color_packed for _ in points]
+        #     points = segment.points
+        #     sampled_points = np.random.choice(len(points), min(len(points), 1000), replace=True)
+        #     points = [points[i] for i in sampled_points]
+        #     points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
+        #     points_msg.channels[0].values += [color_packed for _ in points]
         
-        self.object_points_pub.publish(points_msg)
+        # self.object_points_pub.publish(points_msg)
 
         return
     
@@ -234,11 +255,33 @@ class RomanMapNode():
             pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
             pkl_file.close()
 
+    def _wait_for_message(self, topic, msg_type):
+        """
+        Wait for a message on topic of type msg_type
+        """
+        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, 1)
+        
+        self._wait_for_message_msg = None
+        while self._wait_for_message_msg is None:
+            rclpy.spin_once(self)
+        msg = self._wait_for_message_msg
+        # subscription.destroy()
+
+        return msg
+    
+    def _wait_for_message_cb(self, msg):
+        self._wait_for_message_msg = msg
+        return
+
 def main():
 
-    rospy.init_node('segment_tracker_node')
+    rclpy.init()
     node = RomanMapNode()
-    rospy.spin()
+    rclpy.spin(node)
+
+    node.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == "__main__":
     main()

@@ -13,7 +13,6 @@ import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile
-
 import tf2_ros
 
 # ROS msgs
