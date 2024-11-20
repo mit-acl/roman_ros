@@ -59,6 +59,7 @@ class FastSAMNode(Node):
                 ("fastsam_erosion_size", 3),
                 ("fastsam_min_dt", 0.1),
                 ("fastsam_viz", False),
+                ("fastsam_max_depth", 8.0),
             ]
         )
 
@@ -77,6 +78,7 @@ class FastSAMNode(Node):
         fastsam_min_area_div = self.get_parameter("fastsam_min_area_div").value
         fastsam_max_area_div = self.get_parameter("fastsam_max_area_div").value
         fastsam_erosion_size = self.get_parameter("fastsam_erosion_size").value
+        fastsam_max_depth = self.get_parameter("fastsam_max_depth").value
         self.min_dt = self.get_parameter("fastsam_min_dt").value
 
         self.visualize = self.get_parameter("fastsam_viz").value
@@ -106,7 +108,7 @@ class FastSAMNode(Node):
         
         self.fastsam.setup_rgbd_params(
             depth_cam_params=self.depth_params, 
-            max_depth=8,
+            max_depth=fastsam_max_depth,
             depth_scale=1e3,
             voxel_size=0.05,
             erosion_size=fastsam_erosion_size
@@ -178,7 +180,7 @@ class FastSAMNode(Node):
 
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
-            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=1.0))
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=2.0))
             flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=0.1))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
             self.get_logger().warning("tf lookup failed")
