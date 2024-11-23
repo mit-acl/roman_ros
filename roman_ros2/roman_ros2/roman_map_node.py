@@ -55,6 +55,7 @@ class RomanMapNode(Node):
                 ("output_map", None),
                 ("cam_frame_id", "camera_link"),
                 ("map_frame_id", "map"),
+                ("object_ref", "bottom_middle"),
                 ("viz/num_objs", 20),
                 ("viz/pts_per_obj", 250),
                 ("viz/min_viz_dt", 2.0),
@@ -70,6 +71,7 @@ class RomanMapNode(Node):
         mask_downsample_factor = self.get_parameter("mask_downsample_factor").value
         self.visualize = self.get_parameter("visualize").value
         self.output_file = self.get_parameter("output_map").value
+        self.object_ref = self.get_parameter("object_ref").value
         if self.visualize:
             self.cam_frame_id = self.get_parameter("cam_frame_id").value
             self.map_frame_id = self.get_parameter("map_frame_id").value
@@ -158,6 +160,8 @@ class RomanMapNode(Node):
         segment: Segment
         for segment in self.mapper.inactive_segments:
             if segment.last_seen == t or segment.id in new_inactive_ids:
+                if self.object_ref == 'bottom_middle':
+                    segment.set_center_ref('bottom_middle')
                 self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
         
         if self.output_file is not None:
