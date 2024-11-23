@@ -10,7 +10,7 @@ import std_msgs.msg as std_msgs
 import ros2_numpy as rnp
 
 from roman.map.observation import Observation
-from roman.object.segment import Segment
+from roman.object.segment import Segment, SegmentMinimalData
 
 # Function to convert a float timestamp to ROS 2 Time
 def float_to_ros_time(float_time):
@@ -102,6 +102,30 @@ def segment_to_msg(robot_id: int, segment: Segment):
         shape_attributes=[segment.volume, segment.linearity(e), segment.planarity(e), segment.scattering(e)]
     )
     return segment_msg
+
+def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
+    """
+    Convert segment message to segment data class
+
+    Args:
+        segment_msg (roman_msgs.Segment): segment message
+
+    Returns:
+        Segment: segment data class
+    """
+    segment = SegmentMinimalData(
+        id=segment_msg.segment_id,
+        center=np.array([segment_msg.position.x, segment_msg.position.y, segment_msg.position.z]),
+        volume=segment_msg.shape_attributes[0],
+        linearity=segment_msg.shape_attributes[1],
+        planarity=segment_msg.shape_attributes[2],
+        scattering=segment_msg.shape_attributes[3],
+        semantic_descriptor=None,
+        extent=None,
+        first_seen=None,
+        last_seen=time_stamp_to_float(segment_msg.header.stamp),
+    )
+    return segment
 
 def centroid_from_segment(segment: Segment):
     """
