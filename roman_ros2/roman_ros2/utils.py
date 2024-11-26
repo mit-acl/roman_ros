@@ -1,16 +1,30 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
+from dataclasses import dataclass
+from typing import Tuple
 
 import rclpy
 from builtin_interfaces.msg import Time
 import roman_msgs.msg as roman_msgs
 import geometry_msgs.msg as geometry_msgs
 import std_msgs.msg as std_msgs
+import visualization_msgs.msg as visualization_msgs
 
 import ros2_numpy as rnp
 
 from roman.map.observation import Observation
 from roman.object.segment import Segment, SegmentMinimalData
+
+class MapColors:
+
+    ego_map: Tuple[float, float, float] = (1.0, 0.0, 0.0)
+    other_map: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    correspondences: Tuple[float, float, float] = (0.0, 1.0, 0.0)
+
+    @classmethod
+    def dimmed(cls, color):
+        return tuple([c * 0.5 for c in color])
+    
 
 # Function to convert a float timestamp to ROS 2 Time
 def float_to_ros_time(float_time):
@@ -162,3 +176,32 @@ def estimate_volume(points, axis_discretization=10):
                                             points > np.array([x, y, z]))):
                     volume += x_seg_size * y_seg_size * z_seg_size
     return volume
+
+def default_marker(position: Tuple[float, float, float], color: Tuple[float, float, float], id=0) -> visualization_msgs.Marker:
+    """
+    Create a default marker for visualization
+
+    Args:
+        position (Tuple[float, float, float]): position of the marker
+
+    Returns:
+        visualization_msgs.Marker: marker message
+    """
+    marker = visualization_msgs.Marker()
+    marker.header.frame_id = "map" # TODO: not sure what frame we want to do this visualization
+    marker.header.stamp = rclpy.time.Time().to_msg()
+    marker.ns = "default"
+    marker.id = id
+    marker.type = visualization_msgs.Marker.SPHERE
+    marker.action = visualization_msgs.Marker.ADD
+    marker.pose.position = rnp.msgify(geometry_msgs.Point, np.array(position).reshape(-1))
+    marker.pose.orientation = rnp.msgify(geometry_msgs.Quaternion, Rot.from_euler('xyz', [0, 0, 0]).as_quat())
+    marker.scale.x = 0.25
+    marker.scale.y = 0.25
+    marker.scale.z = 0.25
+    marker.color.a = 1.0
+    marker.color.r = color[0]
+    marker.color.g = color[1]
+    marker.color.b = color[2]
+    marker.lifetime = rclpy.duration.Duration(seconds=1.0).to_msg()
+    return marker

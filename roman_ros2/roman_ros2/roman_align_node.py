@@ -21,8 +21,7 @@ from roman.align.roman import ROMAN, ROMANParams
 from roman.utils import transform_rm_roll_pitch
 
 # Local imports
-from roman_ros2.utils import msg_to_segment, time_stamp_to_float
-
+from roman_ros2.utils import msg_to_segment, MapColors, default_marker
 
 class RecentROMANMap():
 
@@ -124,8 +123,8 @@ class ROMANAlignNode(Node):
         # ros publishers
         self.transform_pub = self.create_publisher(geometry_msgs.TransformStamped, 
                                     f"/{self.robot1}/roman/frame_align/{self.robot2}", 10)
-        # self.map_association_pub = self.create_publisher(visualization_msgs.MarkerArray, 
-        #                             f"/{self.robot1}/roman/frame_align/{self.robot2}/markers", 10)
+        self.map_association_pub = self.create_publisher(visualization_msgs.MarkerArray, 
+                                    f"/{self.robot1}/roman/frame_align/{self.robot2}/markers", 10)
 
     def seg_cb(self, seg_msg: roman_msgs.Segment, robot: str):
         """
@@ -157,6 +156,7 @@ class ROMANAlignNode(Node):
         print(f"Found {len(associations)} associations.")
         
         if len(associations) < self.clipper_min_associations:
+            self.publish_association_viz(map1, map2, associations)
             return
 
         # compute frame alignment (the pose of frame2 with respect to frame1)
@@ -174,24 +174,29 @@ class ROMANAlignNode(Node):
         tf_msg.child_frame_id = self.frame2
         tf_msg.transform = rnp.msgify(geometry_msgs.Transform, T_frame1_frame2)
         self.transform_pub.publish(tf_msg)
-
+        self.publish_association_viz(map1, map2, associations)
         return
     
-    def pub_map(self, robot):
-        pass
-        # # publish map array
-        # map_array = geometry_msgs.PoseArray()
-        # map_array.header.stamp = rospy.Time.now()
-        # map_array.header.frame_id = "world"
-        # map_array.poses = []
-        # for obj in self.seg_maps[robot].as_object_list():
-        #     pose = geometry_msgs.Pose()
-        #     pose.position.x = obj.center[0]
-        #     pose.position.y = obj.center[1]
-        #     pose.position.z = obj.center[2]
-        #     map_array.poses.append(pose)
+    def publish_association_viz(self, map1, map2, associations):
+        if len(associations) > self.clipper_min_associations:
+            ego_color = MapColors.ego_map
+            other_color = MapColors.other_map
+            association_color = MapColors.correspondences
+        else:
+            ego_color = MapColors.dimmed(MapColors.ego_map)
+            other_color = MapColors.dimmed(MapColors.other_map)
+            association_color = (0.0, 0.0, 0.0)
         
-        # self.map_array_pub[robot].publish(map_array)  
+        markers = []
+        for i, obj in enumerate(map1):
+            color = association_color if i in associations[:,0] else ego_color
+            markers.append(default_marker(obj.center, color, id=obj.id))
+
+        for i, obj in enumerate(map2):
+            color = association_color if i in associations[:,1] else other_color
+            markers.append(default_marker(obj.center, color, id=int(obj.id + 1e6)))
+
+        self.map_association_pub.publish(visualization_msgs.MarkerArray(markers=markers))
         
 def main():
 
