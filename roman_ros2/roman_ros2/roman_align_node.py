@@ -6,11 +6,12 @@ from dataclasses import dataclass
 # ROS imports
 import rclpy
 from rclpy.node import Node
-import cv_bridge
-import message_filters
+import ros2_numpy as rnp
 
 # ROS msgs
 import roman_msgs.msg as roman_msgs
+import geometry_msgs.msg as geometry_msgs
+import visualization_msgs.msg as visualization_msgs
 
 # Custom modules
 from robotdatapy.transform import transform_to_xyzrpy
@@ -121,10 +122,10 @@ class ROMANAlignNode(Node):
         self.timer = self.create_timer(self.align_dt, self.timer_cb)
 
         # ros publishers
-        # self.map_array_pub = {
-        #     robot: self.create_publisher(geometry_msgs.PoseArray, f"/{robot}/map_array", queue_size=10)
-        # for robot in [self.robot1, self.robot2]}
-
+        self.transform_pub = self.create_publisher(geometry_msgs.TransformStamped, 
+                                    f"/{self.robot1}/roman/frame_align/{self.robot2}", 10)
+        # self.map_association_pub = self.create_publisher(visualization_msgs.MarkerArray, 
+        #                             f"/{self.robot1}/roman/frame_align/{self.robot2}/markers", 10)
 
     def seg_cb(self, seg_msg: roman_msgs.Segment, robot: str):
         """
@@ -165,6 +166,14 @@ class ROMANAlignNode(Node):
         print(f"T^{self.frame1}_{self.frame2} = ")
         print(f"x: {xyzrpy[0]:.2f}, y: {xyzrpy[1]:.2f}, z: {xyzrpy[2]:.2f}, ")
         print(f"roll: {xyzrpy[3]:.2f}, pitch: {xyzrpy[4]:.2f}, yaw: {xyzrpy[5]:.2f}")
+
+        # publish transform
+        tf_msg = geometry_msgs.TransformStamped()
+        tf_msg.header.stamp = self.get_clock().now().to_msg()
+        tf_msg.header.frame_id = self.frame1
+        tf_msg.child_frame_id = self.frame2
+        tf_msg.transform = rnp.msgify(geometry_msgs.Transform, T_frame1_frame2)
+        self.transform_pub.publish(tf_msg)
 
         return
     
