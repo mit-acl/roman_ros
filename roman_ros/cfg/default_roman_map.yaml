@@ -1,0 +1,4 @@
+robot_id: 0
+visualize: true
+min_viz_dt: 2.0
+output_roman_map: /home/masonbp/roman_map.pkl

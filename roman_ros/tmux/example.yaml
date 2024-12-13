@@ -1,0 +1,17 @@
+session_name: roman_ros
+
+environment:
+  BAG: ${BAG}
+  ROBOT: ${ROBOT}
+  CAMERA: ${CAMERA}
+
+options:
+  default-command: /bin/bash
+
+windows:
+- window_name: mapping
+  layout: tiled
+  panes:
+  - roslaunch roman_ros offline_data.launch robot:=$ROBOT camera:=$CAMERA bag:=$BAG uncompress_rgb:=true
+  - roslaunch roman_ros fastsam_node.launch robot:=$ROBOT camera:=$CAMERA --wait
+  - roslaunch roman_ros roman_map_node.launch robot:=$ROBOT camera:=$CAMERA --wait

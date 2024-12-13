@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+ROS node for creating ROMAN open-set object map.
+
+Author: Mason Peterson
+"""
 
 import numpy as np
 import os
@@ -26,13 +31,13 @@ from robotdatapy.camera import CameraParams
 
 # ROMAN
 from roman.map.fastsam_wrapper import FastSAMWrapper
-from roman.map.tracker import Tracker
+from roman.map.mapper import Mapper, MapperParams
 from roman.object.segment import Segment
 
 # relative
 from utils import observation_from_msg, segment_to_msg
 
-class SegmentTrackerNode():
+class ROMANMapNode():
 
     def __init__(self):
 
@@ -43,10 +48,11 @@ class SegmentTrackerNode():
         max_t_no_sightings = rospy.get_param("~max_t_no_sightings", 0.25)
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
-        self.output_file = rospy.get_param("~output_segtrack", None)
+        self.output_file = rospy.get_param("~output_roman_map", None)
         if self.visualize:
             self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
             self.map_frame_id = rospy.get_param("~map_frame_id", "map")
+            self.odom_base_frame_id = rospy.get_param("~odom_base_frame_id", "base")
             self.viz_num_objs = rospy.get_param("~viz/num_objs", 20)
             self.viz_pts_per_obj = rospy.get_param("~viz/pts_per_obj", 250)
             self.min_viz_dt = rospy.get_param("~viz/min_viz_dt", 2.0)
@@ -58,27 +64,26 @@ class SegmentTrackerNode():
             rospy.loginfo(f"Output file: {self.output_file}")
         elif self.output_file == "":
             self.output_file = None
+        print(self.output_file)
 
         # tracker
-        rospy.loginfo("SegmentTrackerNode waiting for color camera info messages...")
+        rospy.loginfo("ROMANMapNode waiting for color camera info messages...")
         color_info_msg = rospy.wait_for_message("color/camera_info", sensor_msgs.CameraInfo)
         color_params = CameraParams.from_msg(color_info_msg)
-        rospy.loginfo("SegmentTrackerNode received for color camera info messages...")
+        rospy.loginfo("ROMANMapNode received for color camera info messages...")
 
-        self.tracker = Tracker(
+        mapper_params = MapperParams(
             camera_params=color_params,
             min_iou=min_iou,
             min_sightings=min_sightings,
             max_t_no_sightings=max_t_no_sightings,
             mask_downsample_factor=mask_downsample_factor,
         )
+        self.tracker = Mapper(mapper_params)
 
         self.setup_ros()
 
     def setup_ros(self):
-        
-        # ros subscribers
-        rospy.Subscriber("roman/observations", roman_msgs.ObservationArray, self.obs_cb)
 
         # ros publishers
         self.segments_pub = rospy.Publisher("roman/segment_updates", roman_msgs.Segment, queue_size=5)
@@ -91,7 +96,8 @@ class SegmentTrackerNode():
                 tf_buffer = tf2_ros.Buffer()
                 tf_listener = tf2_ros.TransformListener(tf_buffer)
                 odom_msg = rospy.wait_for_message("odom", nav_msgs.Odometry)
-                transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
+                # transform_stamped_msg = tf_buffer.lookup_transform(odom_msg.child_frame_id, self.cam_frame_id, rospy.Time(0))
+                transform_stamped_msg = tf_buffer.lookup_transform(self.odom_base_frame_id, self.cam_frame_id, rospy.Time(0))
                 self.T_BC = rnp.numpify(transform_stamped_msg.transform)
             else:
                 self.T_BC = np.eye(4)
@@ -106,8 +112,11 @@ class SegmentTrackerNode():
             self.annotated_img_pub = rospy.Publisher("roman/annotated_img", sensor_msgs.Image, queue_size=5)
             self.object_points_pub = rospy.Publisher("roman/object_points", sensor_msgs.PointCloud, queue_size=5)
 
+        # ros subscribers
+        rospy.Subscriber("roman/observations", roman_msgs.ObservationArray, self.obs_cb)
+
         rospy.on_shutdown(self.shutdown)
-        rospy.loginfo("Segment Tracker Node setup complete.")
+        rospy.loginfo("Segment Mapper Node setup complete.")
         rospy.loginfo("Waiting for observation.")
 
     def obs_cb(self, obs_array_msg):
@@ -163,7 +172,7 @@ class SegmentTrackerNode():
         segment: Segment
         for i, segment in enumerate(self.tracker.segments + self.tracker.inactive_segments + self.tracker.segment_graveyard):
             # only draw segments seen in the last however many seconds
-            if segment.last_seen < t - self.tracker.segment_graveyard_time - 10:
+            if segment.last_seen < t - self.tracker.params.segment_graveyard_time - 10:
                 continue
             try:
                 bbox = segment.reprojected_bbox(pose @ self.T_BC)
@@ -229,15 +238,14 @@ class SegmentTrackerNode():
         if self.output_file is not None:
             print(f"Saving map to {self.output_file}...")
             time.sleep(5.0)
-            self.tracker.make_pickle_compatible()
             pkl_file = open(self.output_file, 'wb')
-            pickle.dump([self.tracker, self.pose_history, self.time_history], pkl_file, -1)
+            pickle.dump(self.tracker.get_roman_map(), pkl_file, -1)
             pkl_file.close()
 
 def main():
 
     rospy.init_node('segment_tracker_node')
-    node = SegmentTrackerNode()
+    node = ROMANMapNode()
     rospy.spin()
 
 if __name__ == "__main__":

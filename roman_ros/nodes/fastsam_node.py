@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+ROS wrapper for running FastSAM
+
+Author: Mason Peterson
+"""
 
 import numpy as np
 import os
