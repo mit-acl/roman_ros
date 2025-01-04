@@ -1,7 +1,5 @@
 # ROMAN ROS
 
-This is ROS wrapper code for running `roman` mapping real-time.
-
 <img src="./media/opposite_view_loop_closure.jpg" alt="Opposite view loop closure" width="500"/>
 
 Welcome to roman_ros, a ROS wrapper for [ROMAN](https://acl.mit.edu/ROMAN/) (<ins>R</ins>obust <ins>O</ins>bject <ins>M</ins>ap <ins>A</ins>lignment A<ins>n</ins>ywhere).
@@ -26,7 +24,9 @@ M.B. Peterson, Y.X. Jia, Y. Tian and J.P. How, "ROMAN: Open-Set Object Map Align
 
 # Install
 
-In the root directory of your ROS workspace run:
+First, install the ROMAN python package using the install directions [here](https://github.com/mit-acl/ROMAN?tab=readme-ov-file#install).
+
+Then, in the root directory of your ROS workspace run:
 
 ```
 cd src
@@ -38,12 +38,16 @@ catkin build
 
 # Running with D455 and Kimera-VIO
 
-An example is provided running a D455 with Kimera-VIO for odometry.
+An example is provided running a D455 with Kimera-VIO for odometry. 
+This example works with Kimera-Multi Data available [here](https://github.com/MIT-SPARK/Kimera-Multi-Data).
 
 ```
 export ROBOT=<robot name>
 export CAMERA=<camera name>
 export BAG=<path to bag file>
+export ROMAN_WS=<path to workspace where roman_ros is installed>
+export KIMERA_WS=<path to workspace where Kimera-VIO is installed>
+export ACTIVATE_ROMAN_ENV=<command to activate python environment where roman is installed>
 tmuxp load ./tmux/example.yaml
 ```
 

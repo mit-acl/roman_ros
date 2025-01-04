@@ -4,14 +4,36 @@ environment:
   BAG: ${BAG}
   ROBOT: ${ROBOT}
   CAMERA: ${CAMERA}
+  ROMAN_WS: ${ROMAN_WS}
+  KIMERA_WS: ${KIMERA_WS}
+  ACTIVATE_ROMAN_ENV: ${ACTIVATE_ROMAN_ENV}
 
 options:
   default-command: /bin/bash
 
 windows:
-- window_name: mapping
+- window_name: roman_map
   layout: tiled
+  focus: true
+  shell_command_before:
+  - source $ROMAN_WS/devel/setup.bash
+  - $ACTIVATE_ROMAN_ENV
   panes:
-  - roslaunch roman_ros offline_data.launch robot:=$ROBOT camera:=$CAMERA bag:=$BAG uncompress_rgb:=true
   - roslaunch roman_ros fastsam_node.launch robot:=$ROBOT camera:=$CAMERA --wait
   - roslaunch roman_ros roman_map_node.launch robot:=$ROBOT camera:=$CAMERA --wait
+
+- window_name: rosbag
+  layout: tiled
+  shell_command_before:
+  - source $ROMAN_WS/devel/setup.bash
+  panes:
+  - roslaunch roman_ros offline_data.launch robot:=$ROBOT camera:=$CAMERA bag:=$BAG uncompress_rgb:=true --wait
+
+- window_name: kimera_vio
+  layout: tiled
+  shell_command_before:
+  - source $KIMERA_WS/devel/setup.bash
+  panes:
+  - roslaunch kimera_multi kimera_vio_jackal.launch robot_name:=$ROBOT robot_id:=0 
+    use_d455:=true multirobot:=false lcd_no_optimize:=true use_external_odom:=true replay:=true 
+    should_use_sim_time:=true
