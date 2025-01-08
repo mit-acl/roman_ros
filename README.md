@@ -6,6 +6,9 @@ Welcome to roman_ros, a ROS wrapper for [ROMAN](https://acl.mit.edu/ROMAN/) (<in
 ROMAN is a view-invariant global localization method that maps open-set objects and uses the geometry, shape, and semantics of objects to find the transformation between a current pose and previously created object map.
 This enables loop closure between robots even when a scene is observed from *opposite views.*
 
+Demo videos, the paper, and more can be found at the [ROMAN project website](https://acl.mit.edu/ROMAN-project/). 
+Checkout the ros2 branch for the ROS2 wrapper.
+
 ## Citation
 
 If you find ROMAN useful in your work, please cite our paper:
