@@ -52,6 +52,12 @@ class ROMANMapNode():
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
         self.output_file = rospy.get_param("~output_roman_map", None)
+        T_camera_flu = rospy.get_param("~T_camera_flu", None)
+        if T_camera_flu is not None:
+            T_camera_flu = np.array(T_camera_flu).reshape(4, 4)
+        else:
+            T_camera_flu = np.eye(4)
+
         if self.visualize:
             self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
             self.map_frame_id = rospy.get_param("~map_frame_id", "map")
@@ -82,6 +88,7 @@ class ROMANMapNode():
             mask_downsample_factor=mask_downsample_factor,
         )
         self.tracker = Mapper(mapper_params, camera_params=color_params)
+        self.tracker.set_T_camera_flu(T_camera_flu)
 
         self.setup_ros()
 
