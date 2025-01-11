@@ -31,7 +31,8 @@ from robotdatapy.camera import CameraParams
 
 # ROMAN
 from roman.map.fastsam_wrapper import FastSAMWrapper
-from roman.map.mapper import Mapper, MapperParams
+from roman.map.mapper import Mapper
+from roman.params.mapper_params import MapperParams
 from roman.object.segment import Segment
 
 # relative
@@ -40,6 +41,8 @@ from utils import observation_from_msg, segment_to_msg
 class ROMANMapNode():
 
     def __init__(self):
+        
+        self.up = True
 
         # ros params
         self.robot_id = rospy.get_param("~robot_id", 0)
@@ -49,6 +52,12 @@ class ROMANMapNode():
         mask_downsample_factor = rospy.get_param("~mask_downsample_factor", 8)
         self.visualize = rospy.get_param("~visualize", False)
         self.output_file = rospy.get_param("~output_roman_map", None)
+        T_camera_flu = rospy.get_param("~T_camera_flu", None)
+        if T_camera_flu is not None:
+            T_camera_flu = np.array(T_camera_flu).reshape(4, 4)
+        else:
+            T_camera_flu = np.eye(4)
+
         if self.visualize:
             self.cam_frame_id = rospy.get_param("~cam_frame_id", "camera_link")
             self.map_frame_id = rospy.get_param("~map_frame_id", "map")
@@ -73,13 +82,13 @@ class ROMANMapNode():
         rospy.loginfo("ROMANMapNode received for color camera info messages...")
 
         mapper_params = MapperParams(
-            camera_params=color_params,
             min_iou=min_iou,
             min_sightings=min_sightings,
             max_t_no_sightings=max_t_no_sightings,
             mask_downsample_factor=mask_downsample_factor,
         )
-        self.tracker = Mapper(mapper_params)
+        self.tracker = Mapper(mapper_params, camera_params=color_params)
+        self.tracker.set_T_camera_flu(T_camera_flu)
 
         self.setup_ros()
 
@@ -123,6 +132,9 @@ class ROMANMapNode():
         """
         Triggered by incoming observation messages
         """
+        if not self.up:
+            return
+        
         # publish pulse
         rospy.logwarn("Received messages")
         self.pulse_pub.publish(std_msgs.Empty())
@@ -156,6 +168,8 @@ class ROMANMapNode():
         """
         Triggered by incoming odometry and image messages
         """
+        if not self.up:
+            return
 
         # rospy.logwarn("Received messages")
         t = img_msg.header.stamp.to_sec()
@@ -236,8 +250,9 @@ class ROMANMapNode():
         if self.output_file is None:
             print(f"No file to save to.")
         if self.output_file is not None:
+            self.up = False
             print(f"Saving map to {self.output_file}...")
-            time.sleep(5.0)
+            time.sleep(1.0)
             pkl_file = open(self.output_file, 'wb')
             pickle.dump(self.tracker.get_roman_map(), pkl_file, -1)
             pkl_file.close()
