@@ -389,7 +389,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                 self.run_submap_registration(submap, robot_id, r2)
         else:
             # run registration with ego robot
-            self.run_submap_registration(submap, robot_id, self.ego_robot)
+            self.run_submap_registration(submap, robot_id, self.ego_id)
 
         end_t = time.time()
 
