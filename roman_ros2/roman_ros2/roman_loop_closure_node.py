@@ -281,14 +281,14 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         
         # ros subscribers
         self.segment_subs = [
-            self.create_subscription(roman_msgs.Segment, f"/{robot_name}/roman/segment_updates", 
-                                     lambda msg: self.seg_cb(msg, robot_id), 20)
+            self.create_subscription(roman_msgs.Segment, f"/{robot_name}/roman/segment_updates",
+                                     lambda msg, rid=robot_id: self.seg_cb(msg, rid), 20)
         for robot_name, robot_id in zip(self.live_names, self.live_ids)]
 
         if self.submap_align_params.submap_descriptor is not None:
             self.descriptor_subs = [
-                self.create_subscription(roman_msgs.FrameDescriptor, f"/{robot_name}/roman/frame_descriptor", 
-                                        lambda msg: self.descriptor_cb(msg, robot_id), 20)
+                self.create_subscription(roman_msgs.FrameDescriptor, f"/{robot_name}/roman/frame_descriptor",
+                                        lambda msg, rid=robot_id: self.descriptor_cb(msg, rid), 20)
             for robot_name, robot_id in zip(self.live_names, self.live_ids)]
 
         # tf buffer
@@ -389,7 +389,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                 self.run_submap_registration(submap, robot_id, r2)
         else:
             # run registration with ego robot
-            self.run_submap_registration(submap, robot_id, self.ego_robot)
+            self.run_submap_registration(submap, robot_id, self.ego_id)
 
         end_t = time.time()
 

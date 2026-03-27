@@ -11,6 +11,7 @@ cmake .. && make && make pip-install
 
 # pip install
 cd $ROMAN_DIR
+pip install --no-build-isolation git+https://github.com/CASIA-IVA-Lab/FastSAM.git@4d153e9
 pip install .
 # TODO figure out how to get ros setup.py to include these
 # (or just include them in roman setup.py)
