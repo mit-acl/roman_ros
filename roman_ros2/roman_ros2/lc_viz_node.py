@@ -56,21 +56,38 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.declare_parameters(
             namespace='',
             parameters=[
+                ("viz_robot_ids", [-1]),
                 ("aligned_traj_viz", True),
+                ("lc_marker_viz", True),
                 ("output_dir", "~/.roman_ros2/loop_closures"),
                 ("img_dim", 300),
                 ("img_border_frac", .1),
                 ("pose_update_dt", 0.25),
-                ("traj_num_pts", 200)
+                ("traj_num_pts", 400),
+                ("lc_marker_color", "#7fffd4"),
+                ("lc_marker_cube_size", 0.5),
             ]
         )
 
         self.aligned_traj_viz = self.get_parameter("aligned_traj_viz").value
+        self.lc_marker_viz = self.get_parameter("lc_marker_viz").value
         self.output_dir = Path(expandvars_recursive(self.get_parameter("output_dir").value))
         self.img_dim = self.get_parameter("img_dim").value
         self.img_border_frac = self.get_parameter("img_border_frac").value
         self.pose_update_dt = self.get_parameter("pose_update_dt").value
         self.traj_num_pts = self.get_parameter("traj_num_pts").value
+        self.lc_marker_cube_size = self.get_parameter("lc_marker_cube_size").value
+
+        # parse hex color to (r, g, b) floats
+        hex_color = self.get_parameter("lc_marker_color").value.lstrip('#')
+        self.lc_marker_color = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+        # parse viz_robot_ids: [-1] means show all
+        viz_robot_ids_param = self.get_parameter("viz_robot_ids").value
+        if viz_robot_ids_param == [-1]:
+            self.viz_robot_ids = None
+        else:
+            self.viz_robot_ids = set(viz_robot_ids_param)
 
         assert self.aligned_traj_viz, "Only aligned trajectory visualizer currently supported."
         self.get_logger().info(f"Saving loop closure visualizations to {str(self.output_dir )}")
@@ -91,12 +108,17 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.get_logger().info("ROMAN Loop Closure Visualizer Setup complete.",)
         
     def setup_ros(self):
-        
+
         # ros publishers
         if self.aligned_traj_viz:
-            self.traj_img_pub = self.create_publisher(sensor_msgs.Image, 
+            self.traj_img_pub = self.create_publisher(sensor_msgs.Image,
                 "roman/roman_lc/aligned_traj", qos_profile=QoSProfile(depth=10))
-            
+        if self.lc_marker_viz:
+            self.lc_marker_pub = self.create_publisher(visualization_msgs.MarkerArray,
+                "roman/roman_lc/lc_markers", qos_profile=QoSProfile(depth=10))
+            self.lc_marker_id = 0
+            self.lc_markers = []
+
         # tf buffer
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -107,8 +129,49 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.timer = self.create_timer(self.pose_update_dt, self.timer_cb)
 
 
+    def _should_viz_lc(self, robot1_id, robot2_id):
+        if self.viz_robot_ids is None:
+            return True
+        lc_robots = {robot1_id, robot2_id}
+        return lc_robots <= (self.viz_robot_ids | {self.ego_id}) and bool(lc_robots & self.viz_robot_ids)
+
     def lc_cb(self, lc_msg: roman_msgs.LoopClosure):
-        
+
+        if not self._should_viz_lc(lc_msg.robot1_id, lc_msg.robot2_id):
+            return
+
+        # publish cube marker at ego robot's pose
+        if self.lc_marker_viz:
+            if lc_msg.robot1_id == self.ego_id:
+                ego_time = time_stamp_to_float(lc_msg.robot1_time)
+            elif lc_msg.robot2_id == self.ego_id:
+                ego_time = time_stamp_to_float(lc_msg.robot2_time)
+            else:
+                ego_time = None
+
+            ego_traj = self.trajectories[self.ego_id]
+            if ego_time is not None and ego_traj is not None:
+                T_odom_ego = ego_traj.pose(ego_time)
+                marker = visualization_msgs.Marker()
+                marker.header.frame_id = self.ego_odom_frame
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.ns = "lc_markers"
+                marker.id = self.lc_marker_id
+                self.lc_marker_id += 1
+                marker.type = visualization_msgs.Marker.CUBE
+                marker.action = visualization_msgs.Marker.ADD
+                marker.pose.position = rnp.msgify(geometry_msgs.Point, T_odom_ego[:3, 3].reshape(-1))
+                marker.pose.orientation = rnp.msgify(geometry_msgs.Quaternion, Rot.from_matrix(T_odom_ego[:3, :3]).as_quat())
+                marker.scale.x = self.lc_marker_cube_size
+                marker.scale.y = self.lc_marker_cube_size
+                marker.scale.z = self.lc_marker_cube_size
+                marker.color.a = 1.0
+                marker.color.r = self.lc_marker_color[0]
+                marker.color.g = self.lc_marker_color[1]
+                marker.color.b = self.lc_marker_color[2]
+                self.lc_markers.append(marker)
+                self.lc_marker_pub.publish(visualization_msgs.MarkerArray(markers=self.lc_markers))
+
         # align the trajectories
         traj1 = deepcopy(self.trajectories[lc_msg.robot1_id])
         traj2 = deepcopy(self.trajectories[lc_msg.robot2_id])
