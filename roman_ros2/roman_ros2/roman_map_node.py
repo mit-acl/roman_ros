@@ -3,6 +3,7 @@
 import numpy as np
 import os
 import cv2 as cv
+import copy
 import struct
 import pickle
 import time
@@ -17,6 +18,7 @@ import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
 import time
@@ -37,7 +39,7 @@ from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.map.mapper import Mapper, MapperParams
 from roman.map.map import ROMANMap
 from roman.object.segment import Segment
-from roman.viz import visualize_map_on_img
+from roman.viz import visualize_segment_on_img
 
 # relative
 from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, segment_to_msg, \
@@ -129,7 +131,7 @@ class RomanMapNode(Node):
         self.setup_ros()
 
     def setup_ros(self):
-        
+
         # ros publishers
         self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_updates", qos_profile=10)
         self.pulse_pub = self.create_publisher(std_msgs.Empty, "roman/pulse", qos_profile=10)
@@ -138,14 +140,20 @@ class RomanMapNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # separate callback groups so obs_cb and viz_cb can run in parallel
+        self.obs_cb_group = MutuallyExclusiveCallbackGroup()
+        self.viz_cb_group = MutuallyExclusiveCallbackGroup()
+
         # ros subscribers
-        self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10)
+        self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
+                                 callback_group=self.obs_cb_group)
 
         # visualization
         if self.visualize:
             self.last_viz_t = -np.inf
-            
-            self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10)
+
+            self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10,
+                                     callback_group=self.viz_cb_group)
             self.bridge = cv_bridge.CvBridge()
             self.annotated_img_pub = self.create_publisher(sensor_msgs.Image, "roman/annotated_img", qos_profile=10)
             self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/object_points", qos_profile=10)
@@ -246,9 +254,19 @@ class RomanMapNode(Node):
 
         pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
 
+        # snapshot and shallow-copy segments so visualization doesn't interfere
+        # with the mapper (avoids get_segment_map which resets all memoized caches)
+        segments = [copy.copy(seg) for seg in
+                    self.mapper.segment_graveyard + self.mapper.inactive_segments + self.mapper.segments
+                    if seg.num_points > 0]
+
         # conversion from ros msg to cv img
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
-        img = visualize_map_on_img(t, pose, img, self.mapper)
+        graveyard_time = self.mapper.params.segment_graveyard_time
+        for segment in segments:
+            if segment.last_seen < t - graveyard_time - 10:
+                continue
+            img = visualize_segment_on_img(segment, pose, img)
             
         if self.viz_rotate_img is not None:
             if self.viz_rotate_img == "CW":
