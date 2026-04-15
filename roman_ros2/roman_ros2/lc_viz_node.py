@@ -234,6 +234,10 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.traj_img_pub.publish(img_msg)
 
     def timer_cb(self):
+        # re-publish all loop closure markers so they persist in RViz
+        if self.lc_marker_viz and self.lc_markers:
+            self.lc_marker_pub.publish(visualization_msgs.MarkerArray(markers=self.lc_markers))
+
         # record times and poses
         curr_time = self.get_clock().now()
         curr_time_float = time_stamp_to_float(curr_time.to_msg())
