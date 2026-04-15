@@ -170,7 +170,6 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
                 marker.color.g = self.lc_marker_color[1]
                 marker.color.b = self.lc_marker_color[2]
                 self.lc_markers.append(marker)
-                self.lc_marker_pub.publish(visualization_msgs.MarkerArray(markers=self.lc_markers))
 
         # align the trajectories
         traj1 = deepcopy(self.trajectories[lc_msg.robot1_id])
@@ -236,6 +235,9 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
     def timer_cb(self):
         # re-publish all loop closure markers so they persist in RViz
         if self.lc_marker_viz and self.lc_markers:
+            zero_stamp = rclpy.time.Time().to_msg()
+            for m in self.lc_markers:
+                m.header.stamp = zero_stamp
             self.lc_marker_pub.publish(visualization_msgs.MarkerArray(markers=self.lc_markers))
 
         # record times and poses
