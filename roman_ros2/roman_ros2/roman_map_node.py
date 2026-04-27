@@ -3,11 +3,13 @@
 import numpy as np
 import os
 import cv2 as cv
+import copy
 import struct
 import pickle
 import time
 import signal
 from pathlib import Path
+from scipy.spatial.transform import Rotation as Rot
 
 # ROS imports
 import rclpy
@@ -17,6 +19,7 @@ import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
 import time
@@ -27,6 +30,7 @@ import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
 import roman_msgs.msg as roman_msgs
+import visualization_msgs.msg as visualization_msgs
 from ros_system_monitor_msgs.msg import NodeInfoMsg
 
 # robot_utils
@@ -37,7 +41,7 @@ from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.map.mapper import Mapper, MapperParams
 from roman.map.map import ROMANMap
 from roman.object.segment import Segment
-from roman.viz import visualize_map_on_img
+from roman.viz import visualize_segment_on_img
 
 # relative
 from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, segment_to_msg, \
@@ -68,7 +72,11 @@ class RomanMapNode(Node):
                 ("viz_pts_per_obj", 250),               # number of points to visualize per object
                 ("viz_min_viz_dt", 0.25),               # minimum time between visualizations
                 ("viz_rotate_img", ""),                 # rotate image for visualization, options: CW, CCW, 180
-                ("viz_pointcloud", False)               # whether to publish pointcloud of objects
+                ("viz_pointcloud", False),               # whether to publish pointcloud of objects
+                ("viz_object_map", False),              # whether to publish OBB markers of object map
+                ("viz_object_map_dt", 1.0),             # how often to publish object map markers (seconds)
+                ("viz_object_map_time_window", 60.0),   # only show objects seen in the last N seconds (-1 for all)
+                ("viz_object_map_alpha", 0.5),          # transparency of object map markers
             ]
         )
 
@@ -86,8 +94,10 @@ class RomanMapNode(Node):
         
         assert self.base_flu_frame_id != "", "base_flu_frame_id must be set"
 
-        if self.visualize:
+        self.viz_object_map = self.get_parameter("viz_object_map").value
+        if self.visualize or self.viz_object_map:
             self.odom_frame_id = self.get_parameter("odom_frame_id").value
+        if self.visualize:
             self.viz_num_objs = self.get_parameter("viz_num_objs").value
             self.viz_pts_per_obj = self.get_parameter("viz_pts_per_obj").value
             self.min_viz_dt = self.get_parameter("viz_min_viz_dt").value
@@ -95,6 +105,10 @@ class RomanMapNode(Node):
             self.viz_pointcloud = self.get_parameter("viz_pointcloud").value
             if self.viz_rotate_img == "":
                 self.viz_rotate_img = None
+        if self.viz_object_map:
+            self.viz_object_map_dt = self.get_parameter("viz_object_map_dt").value
+            self.viz_object_map_time_window = self.get_parameter("viz_object_map_time_window").value
+            self.viz_object_map_alpha = self.get_parameter("viz_object_map_alpha").value
         if self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
             output_file_parent = Path(self.output_file).parent
@@ -129,7 +143,7 @@ class RomanMapNode(Node):
         self.setup_ros()
 
     def setup_ros(self):
-        
+
         # ros publishers
         self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_updates", qos_profile=10)
         self.pulse_pub = self.create_publisher(std_msgs.Empty, "roman/pulse", qos_profile=10)
@@ -138,17 +152,29 @@ class RomanMapNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # separate callback groups so obs_cb and viz_cb can run in parallel
+        self.obs_cb_group = MutuallyExclusiveCallbackGroup()
+        self.viz_cb_group = MutuallyExclusiveCallbackGroup()
+
         # ros subscribers
-        self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10)
+        self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
+                                 callback_group=self.obs_cb_group)
 
         # visualization
         if self.visualize:
             self.last_viz_t = -np.inf
-            
-            self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10)
+
+            self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10,
+                                     callback_group=self.viz_cb_group)
             self.bridge = cv_bridge.CvBridge()
             self.annotated_img_pub = self.create_publisher(sensor_msgs.Image, "roman/annotated_img", qos_profile=10)
             self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/object_points", qos_profile=10)
+
+        if self.viz_object_map:
+            self.object_map_pub = self.create_publisher(visualization_msgs.MarkerArray,
+                "roman/object_map", qos_profile=10)
+            self.create_timer(self.viz_object_map_dt, self.object_map_timer_cb,
+                              callback_group=self.viz_cb_group)
 
         self.log_and_send_status("ROMAN Map Node setup complete.", status=NodeInfoMsg.STARTUP)
         self.log_and_send_status("Waiting for observation.", status=NodeInfoMsg.STARTUP)
@@ -246,9 +272,19 @@ class RomanMapNode(Node):
 
         pose = rnp.numpify(transform_stamped_msg.transform).astype(np.float64)
 
+        # snapshot and shallow-copy segments so visualization doesn't interfere
+        # with the mapper (avoids get_segment_map which resets all memoized caches)
+        segments = [copy.copy(seg) for seg in
+                    self.mapper.segment_graveyard + self.mapper.inactive_segments + self.mapper.segments
+                    if seg.num_points > 0]
+
         # conversion from ros msg to cv img
         img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
-        img = visualize_map_on_img(t, pose, img, self.mapper)
+        graveyard_time = self.mapper.params.segment_graveyard_time
+        for segment in segments:
+            if segment.last_seen < t - graveyard_time - 10:
+                continue
+            img = visualize_segment_on_img(segment, pose, img)
             
         if self.viz_rotate_img is not None:
             if self.viz_rotate_img == "CW":
@@ -261,7 +297,69 @@ class RomanMapNode(Node):
         annotated_img_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
         annotated_img_msg.header = img_msg.header
         self.annotated_img_pub.publish(annotated_img_msg)
-        
+
+    def object_map_timer_cb(self):
+        """
+        Publishes OBB markers for the object map at a fixed rate.
+        """
+        now = self.get_clock().now()
+        t = time_stamp_to_float(now.to_msg())
+
+        # snapshot segments (same copy approach as viz_cb)
+        segments = [copy.copy(seg) for seg in
+                    self.mapper.segment_graveyard + self.mapper.inactive_segments + self.mapper.segments
+                    if seg.num_points > 4]
+
+        markers = []
+        # first marker deletes all previous markers
+        delete_marker = visualization_msgs.Marker()
+        delete_marker.action = visualization_msgs.Marker.DELETEALL
+        markers.append(delete_marker)
+
+        for segment in segments:
+            if self.viz_object_map_time_window > 0 and \
+                    segment.last_seen < t - self.viz_object_map_time_window:
+                continue
+
+            try:
+                obb = segment.obb
+            except Exception:
+                continue
+
+            marker = visualization_msgs.Marker()
+            marker.header.frame_id = self.odom_frame_id
+            marker.header.stamp = now.to_msg()
+            marker.ns = "object_map"
+            marker.id = segment.id
+            marker.type = visualization_msgs.Marker.CUBE
+            marker.action = visualization_msgs.Marker.ADD
+
+            center = np.asarray(obb.center)
+            marker.pose.position.x = float(center[0])
+            marker.pose.position.y = float(center[1])
+            marker.pose.position.z = float(center[2])
+
+            quat = Rot.from_matrix(np.asarray(obb.R)).as_quat()  # [x, y, z, w]
+            marker.pose.orientation.x = float(quat[0])
+            marker.pose.orientation.y = float(quat[1])
+            marker.pose.orientation.z = float(quat[2])
+            marker.pose.orientation.w = float(quat[3])
+
+            extent = np.asarray(obb.extent)
+            marker.scale.x = float(extent[0])
+            marker.scale.y = float(extent[1])
+            marker.scale.z = float(extent[2])
+
+            color = segment.viz_color
+            marker.color.r = color[0] / 255.0
+            marker.color.g = color[1] / 255.0
+            marker.color.b = color[2] / 255.0
+            marker.color.a = self.viz_object_map_alpha
+
+            markers.append(marker)
+
+        self.object_map_pub.publish(visualization_msgs.MarkerArray(markers=markers))
+
     def log_and_send_status(self, note, status=NodeInfoMsg.NOMINAL):
         """
         Log a message and send it to the status topic.
