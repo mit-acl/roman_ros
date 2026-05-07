@@ -135,6 +135,7 @@ class ROMANLoopClosureNodeBaseClass(Node):
                 ("lc_std_dev_rotation_deg", 1.0), # standard deviation for rotation in degrees
                 ("lc_std_dev_translation_m", 0.5), # standard deviation for translation in meters
                 ('submap_knn', -1), # number of nearest neighbor submaps to consider for registration, -1 for all
+                ('k_latest_submaps', -1), # only register against the latest k submaps of each robot, -1 for all
                 ("ego_id", 0), # robot id of the ego robot
                 ("ego_name", ""), # robot name of the ego robot
                 ("ego_flu_ref_frame", ""), # ego robot body reference frame that generally has Z point roughly up
@@ -156,6 +157,7 @@ class ROMANLoopClosureNodeBaseClass(Node):
         self.lc_std_dev_rotation_deg = self.get_parameter("lc_std_dev_rotation_deg").value
         self.lc_std_dev_translation_m = self.get_parameter("lc_std_dev_translation_m").value
         self.submap_knn = self.get_parameter("submap_knn").value
+        self.k_latest_submaps = self.get_parameter("k_latest_submaps").value
         self.nickname = self.get_parameter("nickname").value
         self.ego_id = self.get_parameter("ego_id").value
         self.ego_name = self.get_parameter("ego_name").value
@@ -414,6 +416,10 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         # prohibit removing a submap with itself
         if robot_id == other_id:
             other_submaps = [submap2 for submap2 in other_submaps if submap2.id != submap.id]
+
+        # bound to the most recent k submaps of the other robot
+        if self.k_latest_submaps > 0:
+            other_submaps = other_submaps[-self.k_latest_submaps:]
 
         # get k nearest neighbors in terms of submap similarity
         if self.submap_knn is not None and self.submap_align_params.submap_descriptor is not None:
