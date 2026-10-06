@@ -65,6 +65,7 @@ class RomanMapNode(Node):
                 ("base_flu_frame_id", "base_link"),     # robot coordinate frame with xyz = forward left up
                 ("object_ref", "center"),               # bottom_middle or center, what reference point to use for objects
                 ("publish_active_segments", False),     # whether to wait till segments are inactive before publishing them
+                ("publish_dense_points", False),        # whether to include dense segment points in published segments
                 ("nickname", "roman_map"),              # nickname for this node
                 ("use_multiple_cams", False),           # whether mapper will get FastSAM measurements from multiple cameras
                 ("timing_window", 10),                  # timing window used for report processing speed
@@ -86,6 +87,7 @@ class RomanMapNode(Node):
         self.object_ref = self.get_parameter("object_ref").value
         self.base_flu_frame_id = self.get_parameter("base_flu_frame_id").value
         self.publish_active_segments = self.get_parameter("publish_active_segments").value
+        self.publish_dense_points = self.get_parameter("publish_dense_points").value
         self.nickname = self.get_parameter("nickname").value
         self.use_multiple_cams = self.get_parameter("use_multiple_cams").value
         timing_window = self.get_parameter("timing_window").value
@@ -245,7 +247,8 @@ class RomanMapNode(Node):
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
             segment.set_center_ref('bottom_middle')
-        self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
+        self.segments_pub.publish(segment_to_msg(self.robot_id, segment,
+            publish_dense_points=self.publish_dense_points))
 
     def viz_cb(self, img_msg):
         """

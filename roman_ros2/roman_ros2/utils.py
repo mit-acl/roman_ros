@@ -1,4 +1,5 @@
 import numpy as np
+import array
 from scipy.spatial.transform import Rotation as Rot
 from dataclasses import dataclass
 from typing import Tuple, Union
@@ -146,12 +147,14 @@ geometry_msgs/Point position  # Position in odom frame
 float64 volume
 """
 
-def segment_to_msg(robot_id: int, segment: Segment):
+def segment_to_msg(robot_id: int, segment: Segment, publish_dense_points: bool = False):
     """
     Convert segment data class to segment message
 
     Args:
         segment (Segment): segment data class
+        publish_dense_points (bool, optional): whether to include the segment's dense points. 
+            Defaults to False.
 
     Returns:
         roman_msgs.Segment: segment message
@@ -166,6 +169,9 @@ def segment_to_msg(robot_id: int, segment: Segment):
         shape_attributes=[segment.volume, segment.linearity, segment.planarity, segment.scattering],
         semantic_descriptor=segment.semantic_descriptor.flatten().tolist() if segment.semantic_descriptor is not None else [],
     )
+    if publish_dense_points and segment.points is not None:
+        # array.array is accepted directly by rclpy (much faster than a list of floats)
+        segment_msg.dense_points = array.array('f', np.asarray(segment.points, dtype=np.float32).tobytes())
     return segment_msg
 
 def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
@@ -189,6 +195,8 @@ def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
         extent=None,
         first_seen=None,
         last_seen=time_stamp_to_float(segment_msg.header.stamp),
+        points=np.asarray(segment_msg.dense_points, dtype=np.float64).reshape(-1, 3) \
+            if len(segment_msg.dense_points) != 0 else None,
     )
     return segment
 
