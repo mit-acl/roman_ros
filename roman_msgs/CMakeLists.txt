@@ -35,6 +35,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Observation.msg"
   "msg/ObservationArray.msg"
   "msg/Segment.msg"
+  "msg/Submap.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 

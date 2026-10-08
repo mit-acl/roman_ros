@@ -32,11 +32,6 @@ class RecentROMANMap():
 
     def update(self, segment: Segment):
         self.time = segment.last_seen
-        
-        if segment.id in self.segments:
-            segment.first_seen = self.segments[segment.id].first_seen
-        else:
-            segment.first_seen = segment.last_seen
 
         # update segment
         self.segments[segment.id] = segment
