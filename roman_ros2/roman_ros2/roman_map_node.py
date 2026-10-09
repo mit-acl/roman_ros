@@ -309,6 +309,8 @@ class RomanMapNode(Node):
         """
         Publishes OBB markers for the object map at a fixed rate.
         """
+        if not self.up:
+            return
         now = self.get_clock().now()
         t = time_stamp_to_float(now.to_msg())
 
@@ -405,7 +407,7 @@ class RomanMapNode(Node):
             self.mapper.make_pickle_compatible()
             with open(self.output_file, 'wb') as pkl_file:
                 pickle.dump(self.mapper.get_roman_map(), pkl_file, -1)
-            print(f"\033[1;32mROMANMap saved to {self.output_file}!\033[0m", flush=True)
+            self.get_logger().info(f"\033[1;32mROMANMap saved to {self.output_file}!\033[0m")
         self._shutdown_complete = True
 
     def _wait_for_message(self, topic, msg_type):
@@ -437,7 +439,10 @@ def main():
         while rclpy.ok() and not node._shutdown_requested:
             executor.spin_once(timeout_sec=0.1)
     finally:
-        # Stop scheduling callbacks before saving and destroying ROS entities.
+        node.up = False
+        # This Jazzy executor does not join its workers in shutdown(). Drain
+        # them first, while both executor guard conditions and node handles exist.
+        executor._executor.shutdown(wait=True)
         executor.shutdown()
         try:
             node.shutdown()
