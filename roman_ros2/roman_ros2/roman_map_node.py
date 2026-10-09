@@ -22,6 +22,7 @@ from rclpy.qos import QoSProfile
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
+from std_srvs.srv import Empty
 import time
 
 # ROS msgs
@@ -139,6 +140,10 @@ class RomanMapNode(Node):
         # xyz = forward-right-up
         self.mapper.set_T_camera_flu(np.eye(4))
         self.T_camera_flu_set = False
+        
+        self._shutdown_complete = False
+        self._shutdown_requested = False
+        self._shutdown_timer = None
 
         self.setup_ros()
 
@@ -155,6 +160,8 @@ class RomanMapNode(Node):
         # separate callback groups so obs_cb and viz_cb can run in parallel
         self.obs_cb_group = MutuallyExclusiveCallbackGroup()
         self.viz_cb_group = MutuallyExclusiveCallbackGroup()
+        self.shutdown_srv = self.create_service(
+            Empty, "roman/shutdown", self.shutdown_cb, callback_group=self.obs_cb_group)
 
         # ros subscribers
         self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
@@ -302,6 +309,8 @@ class RomanMapNode(Node):
         """
         Publishes OBB markers for the object map at a fixed rate.
         """
+        if not self.up:
+            return
         now = self.get_clock().now()
         t = time_stamp_to_float(now.to_msg())
 
@@ -372,48 +381,34 @@ class RomanMapNode(Node):
         status_msg.notes = note
         self.status_pub.publish(status_msg)
 
-        # Point cloud publishing
-        # points_msg = sensor_msgs.PointCloud()
-        # points_msg.header = img_msg.header
-        # points_msg.header.frame_id = self.odom_frame_id
-        # points_msg.points = []
-        # # points_msg.channels = [sensor_msgs.ChannelFloat32(name=channel, values=[]) for channel in ['r', 'g', 'b']]
-        # points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
-        
-
-        # most_recently_seen_segments = sorted(
-        #     self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
-        #     key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
-
-        # for segment in most_recently_seen_segments:
-        #     # color
-        #     np.random.seed(segment.id)
-        #     color_unpacked = np.random.rand(3)*256
-        #     color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
-        #     color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
-            
-        #     points = segment.points
-        #     sampled_points = np.random.choice(len(points), min(len(points), 1000), replace=True)
-        #     points = [points[i] for i in sampled_points]
-        #     points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
-        #     points_msg.channels[0].values += [color_packed for _ in points]
-        
-        # self.object_points_pub.publish(points_msg)
-
         return
     
+    def shutdown_cb(self, request, response):
+        self.shutdown()
+        if self._shutdown_timer is None:
+            # This shares the service's callback group, so it runs only after
+            # the service callback returns and ROS has sent the response.
+            self._shutdown_timer = self.create_timer(
+                0.01, self._request_shutdown, callback_group=self.obs_cb_group)
+        return response
+
+    def _request_shutdown(self):
+        self._shutdown_timer.cancel()
+        self._shutdown_requested = True
+
     def shutdown(self):
+        if self._shutdown_complete:
+            return
+        self.up = False
         if self.output_file is None:
-            print(f"No file to save to.")
+            print("No file to save to.")
         if self.output_file is not None:
-            self.up = False
             print(f"Saving map to {self.output_file}...")
-            time.sleep(1.0)
             self.mapper.make_pickle_compatible()
-            pkl_file = open(self.output_file, 'wb')
-            pickle.dump(self.mapper.get_roman_map(), pkl_file, -1)
-            pkl_file.close()
-        self.destroy_node()
+            with open(self.output_file, 'wb') as pkl_file:
+                pickle.dump(self.mapper.get_roman_map(), pkl_file, -1)
+            self.get_logger().info(f"\033[1;32mROMANMap saved to {self.output_file}!\033[0m")
+        self._shutdown_complete = True
 
     def _wait_for_message(self, topic, msg_type):
         """
@@ -438,14 +433,22 @@ def main():
     rclpy.init()
     node = RomanMapNode()
 
-    # signal.signal(signal.SIGINT, node.shutdown)
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:
-        executor.spin()
+        while rclpy.ok() and not node._shutdown_requested:
+            executor.spin_once(timeout_sec=0.1)
     finally:
-        node.shutdown()
-        rclpy.shutdown()
+        node.up = False
+        # This Jazzy executor does not join its workers in shutdown(). Drain
+        # them first, while both executor guard conditions and node handles exist.
+        executor._executor.shutdown(wait=True)
+        executor.shutdown()
+        try:
+            node.shutdown()
+        finally:
+            node.destroy_node()
+            rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()
