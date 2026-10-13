@@ -8,6 +8,7 @@
   <license>TODO: License declaration</license>
 
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

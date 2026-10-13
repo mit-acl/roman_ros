@@ -28,6 +28,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FrameDescriptor.msg"
@@ -36,7 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObservationArray.msg"
   "msg/Segment.msg"
   "msg/Submap.msg"
-  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces sensor_msgs
 )
 
 ament_package()

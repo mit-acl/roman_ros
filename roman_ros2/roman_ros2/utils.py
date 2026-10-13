@@ -11,10 +11,13 @@ import std_msgs.msg as std_msgs
 import visualization_msgs.msg as visualization_msgs
 from pose_graph_tools_msgs.msg import PoseGraph, PoseGraphEdge
 
+from sensor_msgs_py import point_cloud2
+
 import ros2_numpy as rnp
 
 from roman.map.observation import Observation
 from roman.map.map import Submap
+from roman.utils import transform_rm_roll_pitch
 from roman.object.segment import Segment, SegmentMinimalData
 
 class MapColors:
@@ -227,9 +230,13 @@ def submap_to_msg(robot_id: int, submap: Submap, odom_frame: str, flu_frame: str
         submap_id=submap.id,
         segments=segment_msgs,
         submap_pose=rnp.msgify(geometry_msgs.Pose, submap.pose_flu),
-        submap_gravity_aligned_pose=rnp.msgify(geometry_msgs.Pose, submap.pose_gravity_aligned),
         descriptors=descriptor_to_array_msg(submap.descriptor),
     )
+    if submap.point_cloud is not None:
+        points = (submap.point_cloud @ T_submap_gravity[:3, :3].T +
+                  T_submap_gravity[:3, 3])
+        submap_msg.point_cloud = [point_cloud2.create_cloud_xyz32(
+            submap_msg.header, points.astype(np.float32))]
     return submap_msg
 
 def msg_to_submap(submap_msg: roman_msgs.Submap) -> Submap:
@@ -243,18 +250,24 @@ def msg_to_submap(submap_msg: roman_msgs.Submap) -> Submap:
         Submap: submap with SegmentMinimalData segments
     """
     pose_flu = rnp.numpify(submap_msg.submap_pose).astype(np.float64)
-    pose_gravity = rnp.numpify(submap_msg.submap_gravity_aligned_pose).astype(np.float64)
+    pose_gravity = transform_rm_roll_pitch(pose_flu)
     T_gravity_submap = np.linalg.inv(pose_gravity) @ pose_flu
     segments = [msg_to_segment(msg) for msg in submap_msg.segments]
     for segment in segments:
         segment.transform(T_gravity_submap)
+    points = None
+    if submap_msg.point_cloud:
+        points = point_cloud2.read_points_numpy(
+            submap_msg.point_cloud[0], field_names=('x', 'y', 'z'), skip_nans=True)
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        points = points @ T_gravity_submap[:3, :3].T + T_gravity_submap[:3, 3]
     return Submap(
         id=submap_msg.submap_id,
         time=time_stamp_to_float(submap_msg.header.stamp),
         segments=segments,
         pose_flu=pose_flu,
-        pose_gravity_aligned=pose_gravity,
         segment_frame='submap_gravity_aligned',
+        point_cloud=points,
         descriptor=descriptor_from_array_msg(submap_msg.descriptors),
     )
 

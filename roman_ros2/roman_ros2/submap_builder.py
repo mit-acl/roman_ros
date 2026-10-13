@@ -74,8 +74,6 @@ class SubmapBuilder:
             segments=deepcopy(result.submap_segments),
             segment_frame='submap_gravity_aligned',
         )
-        # pose_gravity_aligned currently mutates its pose argument; keep the
-        # original FLU pose so body-frame loop closure conversion retains tilt.
         T_center_odom = np.linalg.inv(submap.pose_gravity_aligned)
         for segment in submap.segments:
             segment.transform(T_center_odom)

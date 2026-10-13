@@ -24,7 +24,7 @@ class LCVizFramesTest(unittest.TestCase):
         LCVizNode.submap_cb(node, msg, 3)
         self.assertNotIn(3, node.odom_frames)
 
-    def test_gravity_pose_is_preserved_without_recomputation(self):
+    def test_gravity_pose_is_derived_without_mutating_submap_pose(self):
         from scipy.spatial.transform import Rotation
         from roman.utils import transform_rm_roll_pitch
         pose = np.eye(4)
@@ -32,13 +32,13 @@ class LCVizFramesTest(unittest.TestCase):
         submap = Submap(0, 1., [], pose)
         np.testing.assert_equal(submap.pose_flu, pose)
         np.testing.assert_allclose(submap.pose_gravity_aligned,
-                                   transform_rm_roll_pitch(pose.copy()))
-        # A received gravity pose is authoritative, rather than re-derived.
-        submap.pose_gravity_aligned[0, 3] = 3.
+                                   transform_rm_roll_pitch(pose))
         msg = submap_to_msg(2, submap, 'odom', 'base_link')
         restored = msg_to_submap(msg)
         np.testing.assert_allclose(restored.pose_flu, pose)
         np.testing.assert_allclose(restored.pose_gravity_aligned, submap.pose_gravity_aligned)
+        np.testing.assert_equal(submap.pose_flu, pose)
+        np.testing.assert_allclose(restored.pose_flu, pose)
 
     def test_message_centroids_use_true_submap_frame(self):
         import ros2_numpy as rnp

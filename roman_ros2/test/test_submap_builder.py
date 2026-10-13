@@ -121,7 +121,8 @@ class SubmapCallbackTests(unittest.TestCase):
         builder.update_frame(1., np.eye(4))
         node = SimpleNamespace(object_ref='center', robot_id=7, odom_frame_id='robot/odom', base_flu_frame_id='robot/base_link',
                                segments_pub=Mock(), submap_pub=Mock(), submap_builder=builder,
-                               submap_params=builder.params)
+                               submap_params=builder.params,
+                               mapper=SimpleNamespace(params=SimpleNamespace(store_aggregated_pcds=False)))
         RomanMapNode.publish_segment(node, segment(0))
         RomanMapNode.publish_segment(node, segment(1))
         self.assertEqual(node.segments_pub.publish.call_count, 2)
@@ -208,8 +209,8 @@ class SubmapCallbackTests(unittest.TestCase):
         with patch('roman_ros2.roman_loop_closure_node.lc_to_pose_graph_msg') as to_pose_graph, \
                 patch('roman_ros2.roman_loop_closure_node.lc_to_msg'):
             ROMANLoopClosureNode.run_submap_registration(node, submaps[0], 0, 1)
-        expected = (np.linalg.inv(poses[0]) @ transform_rm_roll_pitch(poses[0].copy()) @
-                    registration_transform @ np.linalg.inv(transform_rm_roll_pitch(poses[1].copy())) @ poses[1])
+        expected = (np.linalg.inv(poses[0]) @ transform_rm_roll_pitch(poses[0]) @
+                    registration_transform @ np.linalg.inv(transform_rm_roll_pitch(poses[1])) @ poses[1])
         np.testing.assert_allclose(to_pose_graph.call_args.args[4], expected)
         for submap, pose in zip(submaps, poses):
             np.testing.assert_equal(submap.pose_flu, pose)
