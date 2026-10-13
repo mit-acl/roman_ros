@@ -15,9 +15,7 @@ from scipy.spatial.transform import Rotation as Rot
 import rclpy
 from rclpy.node import Node
 import cv_bridge
-import message_filters
 import ros2_numpy as rnp
-from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 import tf2_ros
@@ -27,8 +25,6 @@ import time
 
 # ROS msgs
 import std_msgs.msg as std_msgs
-import geometry_msgs.msg as geometry_msgs
-import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
 import roman_msgs.msg as roman_msgs
 import visualization_msgs.msg as visualization_msgs
@@ -38,15 +34,16 @@ from ros_system_monitor_msgs.msg import NodeInfoMsg
 from robotdatapy.camera import CameraParams
 
 # ROMAN
-from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.map.mapper import Mapper, MapperParams
-from roman.map.map import ROMANMap
+from roman.map.map import SubmapParams
+from roman.params.submap_align_params import SubmapAlignParams
 from roman.object.segment import Segment
 from roman.viz import visualize_segment_on_img
 
 # relative
 from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, segment_to_msg, \
-    time_stamp_to_float, TimingFifo
+    msg_to_segment, submap_to_msg, time_stamp_to_float, TimingFifo
+from roman_ros2.submap_builder import SubmapBuilder
 
 class RomanMapNode(Node):
 
@@ -60,6 +57,9 @@ class RomanMapNode(Node):
             parameters=[
                 ("robot_id", 0),                        # robot id for this node
                 ("config_path", ""),                    # non-ros ROMAN mapper.yaml param file
+                ("submap_config_path", ""),             # submap descriptor settings from ROMAN alignment yaml
+                ("submap_num_segments", 40),
+                ("submap_overlapping_segments", 20),
                 ("visualize", False),                   # whether to publish annotated images
                 ("output_roman_map", ""),               # output file to save the map to (must kill node with ctrl-c)
                 ("odom_frame_id", "odom"),              # odometry frame id to map objects in
@@ -86,18 +86,25 @@ class RomanMapNode(Node):
         self.output_file = self.get_parameter("output_roman_map").value
         self.object_ref = self.get_parameter("object_ref").value
         self.base_flu_frame_id = self.get_parameter("base_flu_frame_id").value
+        self.odom_frame_id = self.get_parameter("odom_frame_id").value
         self.publish_active_segments = self.get_parameter("publish_active_segments").value
         self.nickname = self.get_parameter("nickname").value
         self.use_multiple_cams = self.get_parameter("use_multiple_cams").value
         timing_window = self.get_parameter("timing_window").value
         self.timing_fifo = TimingFifo(timing_window)
         config_path = self.get_parameter("config_path").value
+        submap_config_path = self.get_parameter("submap_config_path").value
+        align_params = (SubmapAlignParams.from_yaml(submap_config_path)
+                        if submap_config_path else SubmapAlignParams())
+        self.submap_params = SubmapParams.from_submap_align_params(align_params)
+        self.submap_builder = SubmapBuilder(
+            self.get_parameter("submap_num_segments").value,
+            self.get_parameter("submap_overlapping_segments").value,
+            self.submap_params)
         
         assert self.base_flu_frame_id != "", "base_flu_frame_id must be set"
 
         self.viz_object_map = self.get_parameter("viz_object_map").value
-        if self.visualize or self.viz_object_map:
-            self.odom_frame_id = self.get_parameter("odom_frame_id").value
         if self.visualize:
             self.viz_num_objs = self.get_parameter("viz_num_objs").value
             self.viz_pts_per_obj = self.get_parameter("viz_pts_per_obj").value
@@ -150,7 +157,8 @@ class RomanMapNode(Node):
     def setup_ros(self):
 
         # ros publishers
-        self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_updates", qos_profile=10)
+        self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_update", qos_profile=10)
+        self.submap_pub = self.create_publisher(roman_msgs.Submap, "roman/submap", qos_profile=20)
         self.pulse_pub = self.create_publisher(std_msgs.Empty, "roman/pulse", qos_profile=10)
 
         # ros tf
@@ -211,6 +219,11 @@ class RomanMapNode(Node):
             f"Avg time (ms): {np.round(self.timing_fifo.mean()*1000)}")
             if len(self.timing_fifo) > 0 else f"Map size: {map_size}",)
         self.pulse_pub.publish(std_msgs.Empty())
+
+        frame_descriptor = descriptor_from_array_msg(obs_array_msg.frame_descriptor)
+        self.submap_builder.update_frame(
+            time_stamp_to_float(obs_array_msg.header.stamp),
+            rnp.numpify(obs_array_msg.pose_flu).astype(np.float64), frame_descriptor)
         
         if len(obs_array_msg.observations) == 0:
             return
@@ -232,8 +245,6 @@ class RomanMapNode(Node):
         else:
             pose = rnp.numpify(obs_array_msg.pose_flu) # base link frame
 
-        frame_descriptor = descriptor_from_array_msg(obs_array_msg.frame_descriptor)
-
         self.mapper.update(time_stamp_to_float(obs_array_msg.header.stamp), pose, observations, frame_descriptor)
         updated_inactive_ids = [segment.id for segment in self.mapper.inactive_segments]
         new_inactive_ids = [seg_id for seg_id in updated_inactive_ids if seg_id not in inactive_ids]
@@ -252,7 +263,13 @@ class RomanMapNode(Node):
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
             segment.set_center_ref('bottom_middle')
-        self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
+        segment_msg = segment_to_msg(self.robot_id, segment)
+        self.segments_pub.publish(segment_msg)
+        submap = self.submap_builder.update_segment(msg_to_segment(segment_msg))
+        if submap is not None:
+            if self.submap_params.submap_descriptor is not None and submap.descriptor is None:
+                self.get_logger().warning(f"Submap {submap.id} has no descriptor; check FastSAM descriptor settings.")
+            self.submap_pub.publish(submap_to_msg(self.robot_id, submap, self.odom_frame_id, self.base_flu_frame_id))
 
     def viz_cb(self, img_msg):
         """

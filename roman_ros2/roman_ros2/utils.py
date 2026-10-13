@@ -199,34 +199,42 @@ def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
     )
     return segment
 
-def submap_to_msg(robot_id: int, submap: Submap, odom_frame: str) -> roman_msgs.Submap:
+def submap_to_msg(robot_id: int, submap: Submap, odom_frame: str, flu_frame: str) -> roman_msgs.Submap:
     """
-    Convert a submap to a submap message. Segments stay in the submap's gravity-aligned
-    frame (submap.segment_frame must be 'submap_gravity_aligned').
+    Serialize ROMAN's gravity-aligned segments in the true submap reference frame.
 
     Args:
         robot_id (int): id of the robot the submap belongs to
         submap (Submap): submap whose segments are SegmentMinimalData or Segments
         odom_frame (str): odometry frame the submap pose is expressed in
+        flu_frame (str): robot FLU reference frame at the submap reference time
 
     Returns:
         roman_msgs.Submap: submap message
     """
     assert submap.segment_frame == 'submap_gravity_aligned', \
         f"ERROR: expected segments in the submap gravity-aligned frame, got {submap.segment_frame}."
+    T_submap_gravity = np.linalg.inv(submap.pose_flu) @ submap.pose_gravity_aligned
+    segment_msgs = [segment_to_msg(robot_id, seg) for seg in submap.segments]
+    for msg in segment_msgs:
+        position = rnp.numpify(msg.position).reshape(3)
+        msg.position = rnp.msgify(geometry_msgs.Point,
+            T_submap_gravity[:3, :3] @ position + T_submap_gravity[:3, 3])
     submap_msg = roman_msgs.Submap(
-        header=std_msgs.Header(stamp=float_to_ros_time(submap.time), frame_id=odom_frame),
+        header=std_msgs.Header(stamp=float_to_ros_time(submap.time), frame_id=flu_frame),
+        odom_frame_id=odom_frame,
         robot_id=robot_id,
         submap_id=submap.id,
-        segments=[segment_to_msg(robot_id, seg) for seg in submap.segments],
-        pose=rnp.msgify(geometry_msgs.Pose, submap.pose_flu),
+        segments=segment_msgs,
+        submap_pose=rnp.msgify(geometry_msgs.Pose, submap.pose_flu),
+        submap_gravity_aligned_pose=rnp.msgify(geometry_msgs.Pose, submap.pose_gravity_aligned),
         descriptors=descriptor_to_array_msg(submap.descriptor),
     )
     return submap_msg
 
 def msg_to_submap(submap_msg: roman_msgs.Submap) -> Submap:
     """
-    Convert a submap message to a submap (segments in the submap gravity-aligned frame).
+    Convert true submap-frame message segments to gravity-aligned ROMAN segments.
 
     Args:
         submap_msg (roman_msgs.Submap): submap message
@@ -234,11 +242,18 @@ def msg_to_submap(submap_msg: roman_msgs.Submap) -> Submap:
     Returns:
         Submap: submap with SegmentMinimalData segments
     """
+    pose_flu = rnp.numpify(submap_msg.submap_pose).astype(np.float64)
+    pose_gravity = rnp.numpify(submap_msg.submap_gravity_aligned_pose).astype(np.float64)
+    T_gravity_submap = np.linalg.inv(pose_gravity) @ pose_flu
+    segments = [msg_to_segment(msg) for msg in submap_msg.segments]
+    for segment in segments:
+        segment.transform(T_gravity_submap)
     return Submap(
         id=submap_msg.submap_id,
         time=time_stamp_to_float(submap_msg.header.stamp),
-        segments=[msg_to_segment(seg_msg) for seg_msg in submap_msg.segments],
-        pose_flu=rnp.numpify(submap_msg.pose).astype(np.float64),
+        segments=segments,
+        pose_flu=pose_flu,
+        pose_gravity_aligned=pose_gravity,
         segment_frame='submap_gravity_aligned',
         descriptor=descriptor_from_array_msg(submap_msg.descriptors),
     )

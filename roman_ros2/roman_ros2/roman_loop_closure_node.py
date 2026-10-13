@@ -3,97 +3,30 @@
 import numpy as np
 from numpy.linalg import inv
 from dataclasses import dataclass
-from typing import List
-from copy import deepcopy
 import time
 import os
 
 # ROS imports
 import rclpy
 from rclpy.node import Node
-import ros2_numpy as rnp
 from rclpy.executors import MultiThreadedExecutor
-import tf2_ros
 from rclpy.qos import QoSProfile
 
 # ROS msgs
 import roman_msgs.msg as roman_msgs
-import geometry_msgs.msg as geometry_msgs
-import visualization_msgs.msg as visualization_msgs
 from ros_system_monitor_msgs.msg import NodeInfoMsg
-from pose_graph_tools_msgs.msg import PoseGraph, PoseGraphEdge
+from pose_graph_tools_msgs.msg import PoseGraph
 
 # Custom modules
-from robotdatapy.transform import transform_to_xyzrpy
-from robotdatapy.data import PoseData
-
-from roman.object.segment import Segment, SegmentMinimalData
-from roman.align.roman_registration import ROMANRegistration, ROMANParams
 from roman.align.object_registration import InsufficientAssociationsException
 
 from roman.params.submap_align_params import SubmapAlignParams
 from roman.utils import transform_rm_roll_pitch
-from roman.map.map import Submap, ROMANMap, submaps_from_roman_map, extract_submap_descriptors, SubmapParams
+from roman.map.map import Submap, ROMANMap, submaps_from_roman_map, SubmapParams
 
 # Local imports
-from roman_ros2.utils import msg_to_segment, frame_descriptor_from_msg, float_to_ros_time, lc_to_pose_graph_msg, \
-    lc_to_msg, submap_to_msg, msg_to_submap
+from roman_ros2.utils import lc_to_pose_graph_msg, lc_to_msg, msg_to_submap
 
-@dataclass
-class FrameDescriptor():
-    descriptor: np.ndarray
-    pose: np.ndarray
-    time: float
-
-@dataclass
-class SegmentUpdateResult():
-    """
-    Class to store the result of a segment update.
-    """
-    submap_created: bool
-    submap_segments: List[SegmentMinimalData] = None
-
-class SegmentQueue():
-
-    def __init__(self, submap_num_segments: int, submap_overlapping_segments: int):
-        self.segments = dict()
-        self.submap_num_segments = submap_num_segments
-        self.submap_overlapping_segments = submap_overlapping_segments
-
-    def update(self, segment: Segment):
-        # update existing segment
-        if segment.id in self.segments:
-            self.segments[segment.id] = segment
-            return SegmentUpdateResult(False)
-
-        # create new segment
-        self.segments[segment.id] = segment
-
-        # check if we have enough segments to create a submap
-        if len(self.segments) < self.submap_num_segments:
-            return SegmentUpdateResult(False)
-        
-        assert len(self.segments) == self.submap_num_segments, \
-            "ERROR: Segment queue is incorrect size."
-
-        # create submap
-        submap = []
-        for seg_id, seg in self.segments.items():
-            submap.append(seg)
-
-        segments_sorted_by_time = sorted(submap, key=lambda seg: np.mean([seg.first_seen, seg.last_seen]))
-        rm_segment_ids = [seg.id for seg in segments_sorted_by_time[:-self.submap_overlapping_segments]]
-
-        # remove segments that will not be include in subsequent submaps
-        for seg_id in rm_segment_ids:
-            del self.segments[seg_id]
-
-        return SegmentUpdateResult(True, submap)
-
-    @property
-    def earliest_seen(self):
-        return np.min([seg.first_seen for seg in self.segments.values()])
-    
 @dataclass
 class LoopClosureInfo:
     robot_id1: int = None
@@ -126,8 +59,6 @@ class ROMANLoopClosureNodeBaseClass(Node):
             namespace='',
             parameters=[
                 ("config_path", ""),
-                ("submap_num_segments", 40), # number of segments to create a submap from
-                ("submap_overlapping_segments", 20), # number of overlapping segments between submaps
                 ("lc_required_associations", 6), # minimum number of associations to accept a loop closure
                 ("nickname", "roman_lc"), # node nickname for status messages
                 ("lc_std_dev_rotation_deg", 1.0), # standard deviation for rotation in degrees
@@ -136,24 +67,15 @@ class ROMANLoopClosureNodeBaseClass(Node):
                 ('k_latest_submaps', -1), # only register against the latest k submaps of each robot, -1 for all
                 ("ego_id", 0), # robot id of the ego robot
                 ("ego_name", ""), # robot name of the ego robot
-                ("ego_flu_ref_frame", ""), # ego robot body reference frame that generally has Z point roughly up
-                ("ego_odom_frame", ""), # ego robot odometry frame
-                ("share_type", "segments"), # what live robots share: "segments" (each node builds every
-                                            # robot's submaps from its segment updates) or "submaps" (each
-                                            # robot builds and publishes its own submaps)
                 # NOTE: for the following prameters, [''] is a placeholder for [] because ROS2 does not allow empty lists as default params
                 ("team_ids", [1]), # integer ids for online robots
                 ("team_names", ['']), # string names for online robots
-                ("team_flu_ref_frames", ['']), # robot body reference frames that generally have Z point roughly up
-                ("team_odom_frames", ['']), # robot odometry frames
                 ("prior_session_maps", ['']), # Prior session map paths or a single directory with numbered prior maps
                 ("prior_session_ids", [-1]) # Prior session map ids. Not needed if prior session maps is a directory
             ]
         )
         
         self.config_path = self.get_parameter("config_path").value
-        self.submap_num_segments = self.get_parameter("submap_num_segments").value
-        self.submap_overlapping_segments = self.get_parameter("submap_overlapping_segments").value
         self.lc_required_associations = self.get_parameter("lc_required_associations").value
         self.lc_std_dev_rotation_deg = self.get_parameter("lc_std_dev_rotation_deg").value
         self.lc_std_dev_translation_m = self.get_parameter("lc_std_dev_translation_m").value
@@ -162,13 +84,8 @@ class ROMANLoopClosureNodeBaseClass(Node):
         self.nickname = self.get_parameter("nickname").value
         self.ego_id = self.get_parameter("ego_id").value
         self.ego_name = self.get_parameter("ego_name").value
-        self.ego_flu_ref_frame = self.get_parameter("ego_flu_ref_frame").value
-        self.ego_odom_frame = self.get_parameter("ego_odom_frame").value
-        self.share_type = self.get_parameter("share_type").value
         self.team_ids = self.get_parameter("team_ids").value
         self.team_names = self.get_parameter("team_names").value
-        self.team_flu_ref_frames = self.get_parameter("team_flu_ref_frames").value
-        self.team_odom_frames = self.get_parameter("team_odom_frames").value
         self.prior_session_ids = self.get_parameter("prior_session_ids").value
         self.prior_session_maps = self.get_parameter("prior_session_maps").value
 
@@ -176,8 +93,6 @@ class ROMANLoopClosureNodeBaseClass(Node):
         if self.team_names == ['']:
             self.team_ids = []
             self.team_names = []
-            self.team_flu_ref_frames = []
-            self.team_odom_frames = []
         if self.prior_session_maps == ['']:
             self.prior_session_ids = []
             self.prior_session_maps = []
@@ -203,25 +118,12 @@ class ROMANLoopClosureNodeBaseClass(Node):
         self.live_ids = [self.ego_id] + self.team_ids
         self.all_ids = self.live_ids + self.prior_session_ids
 
-        self.flu_ref_frames = {robot_id: robot_flu_ref_frame 
-            for robot_id, robot_flu_ref_frame in 
-            zip(self.live_ids, [self.ego_flu_ref_frame] + self.team_flu_ref_frames)}
-        self.odom_frames = {robot_id: robot_odom_frame
-            for robot_id, robot_odom_frame in 
-            zip(self.live_ids, [self.ego_odom_frame] + self.team_odom_frames)}
-
         if self.submap_knn < 0:
             self.submap_knn = None
 
         # check params
         assert self.ego_name != "", "ERROR: ego_robot_name param must be set."
-        assert self.ego_flu_ref_frame != "", "ERROR: ego_robot_flu_ref_frame param must be set."
-        assert self.ego_odom_frame != "", "ERROR: ego_robot_odom_frame param must be set."
-        assert self.share_type in ("segments", "submaps"), \
-            f"ERROR: share_type must be 'segments' or 'submaps', got '{self.share_type}'."
         assert len(self.team_ids) == len(self.team_names), "ERROR: team_ids and team_names must be the same length."
-        assert len(self.team_flu_ref_frames) == len(self.team_ids), "ERROR: team_flu_ref_frames param must be set."
-        assert len(self.team_odom_frames) == len(self.team_ids), "ERROR: team_odom_frames param must be set."
         assert len(self.prior_session_maps) == len(self.prior_session_ids), \
             "ERROR: prior_session_maps and prior_session_ids must be the same length."
         assert len(set(self.all_ids)) == len(self.all_ids), \
@@ -237,7 +139,6 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                                                 qos_profile=QoSProfile(depth=10))
 
         # internal variables
-        self.time_eps = 1.0
         self.covariance = np.diag([np.deg2rad(self.lc_std_dev_rotation_deg)**2]*3 + 
                                   [self.lc_std_dev_translation_m**2]*3)
         # time taken, id1, id2, submap_id1, submap_id2
@@ -245,13 +146,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         self.last_lc_time = None
         self.new_lc_flag = False
          
-        self.segment_queues = {
-            live_id: SegmentQueue(self.submap_num_segments, self.submap_overlapping_segments)
-        for live_id in self.live_ids}
         self.submaps = {live_id: [] for live_id in self.live_ids}
-        self.times = {live_id: [] for live_id in self.live_ids}
-        self.poses = {live_id: [] for live_id in self.live_ids}
-        self.descriptors = {live_id: [] for live_id in self.live_ids}
 
         if self.config_path == "":
             self.submap_align_params = SubmapAlignParams()
@@ -285,132 +180,16 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         self.pgt_lc_pub = self.create_publisher(PoseGraph, "roman/roman_lc/pose_graph_update", 
                                                 qos_profile=QoSProfile(depth=10))
         
-        # ros subscribers
-        # the ego robot's submaps are always built here from its segments; with share_type
-        # "segments" teammates' submaps are built here too, with "submaps" they are received
-        # from the teammates' own loop closure nodes
-        self.submap_pub = self.create_publisher(roman_msgs.Submap, f"/{self.ego_name}/roman/submaps",
-                                                qos_profile=QoSProfile(depth=20))
-        if self.share_type == "submaps":
-            segment_robots = [(self.ego_name, self.ego_id)]
-            self.submap_subs = [
-                self.create_subscription(roman_msgs.Submap, f"/{robot_name}/roman/submaps",
-                                         lambda msg, rid=robot_id: self.submap_cb(msg, rid), 20)
-                for robot_name, robot_id in zip(self.team_names, self.team_ids)
-            ]
-        else:
-            segment_robots = list(zip(self.live_names, self.live_ids))
-
-        self.segment_subs = [
-            self.create_subscription(roman_msgs.Segment, f"/{robot_name}/roman/segment_updates",
-                                     lambda msg, rid=robot_id: self.seg_cb(msg, rid), 20)
-            for robot_name, robot_id in segment_robots
+        # Each live robot's mapper publishes its own submaps, including ego.
+        self.submap_subs = [
+            self.create_subscription(roman_msgs.Submap, f"/{robot_name}/roman/submap",
+                                     lambda msg, rid=robot_id: self.submap_cb(msg, rid), 20)
+            for robot_name, robot_id in zip(self.live_names, self.live_ids)
         ]
-
-        # frame descriptors are only needed for the submaps built here
-        if self.submap_align_params.submap_descriptor is not None:
-            self.descriptor_subs = [
-                self.create_subscription(roman_msgs.FrameDescriptor, f"/{robot_name}/roman/frame_descriptor",
-                                        lambda msg, rid=robot_id: self.descriptor_cb(msg, rid), 20)
-            for robot_name, robot_id in segment_robots]
-
-        # tf buffer
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
-    def seg_cb(self, seg_msg: roman_msgs.Segment, robot_id: int):
-        """
-        Callback function for segment messages.
-        """
-        # Send pulse
-        detection_time_info_str = f"Last detection time: {self.last_lc_time} ms" \
-            if self.last_lc_time is not None else "No loop closure detection run yet."
-        self.send_status_msg(detection_time_info_str + " " + str(self.last_lc_info), 
-                             status=NodeInfoMsg.NOMINAL)
-        
-        segment = msg_to_segment(seg_msg)
-        seg_update_res = self.segment_queues[robot_id].update(segment)
-
-        # record times and poses
-        try:
-            T_odom_flu_msg = self.tf_buffer.lookup_transform(self.odom_frames[robot_id], 
-                self.flu_ref_frames[robot_id], float_to_ros_time(segment.last_seen), rclpy.duration.Duration(seconds=0.25))
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-            # self.get_logger().warning("tf lookup failed")
-            # print(ex)
-            return
-
-        T_odom_flu = rnp.numpify(T_odom_flu_msg.transform).astype(np.float64)
-        
-        if segment.last_seen not in self.times[robot_id]:
-            self.times[robot_id].append(segment.last_seen)
-            self.poses[robot_id].append(T_odom_flu)
-
-        if not seg_update_res.submap_created:
-            return
-        
-        # create submap
-        submap_ref_time = np.mean([np.mean([seg.first_seen, seg.last_seen]) for seg in seg_update_res.submap_segments])
-        submap_id = len(self.submaps[robot_id])
-
-        # sort times and poses
-        sorted_times, sorted_poses = zip(*sorted(zip(self.times[robot_id], self.poses[robot_id])))
-        sorted_times = list(sorted_times)
-        sorted_poses = [pose for pose in sorted_poses]
-        pd = PoseData.from_times_and_poses(sorted_times, sorted_poses, interp=False, time_tol=1e3)
-        pd_idx = pd.idx(submap_ref_time, force_single=True)
-        submap_ref_time = sorted_times[pd_idx]
-        submap_ref_pose = sorted_poses[pd_idx]
-
-        # refresh times and poses buffer
-        pd.causal = True
-        earliest_seen_idx = pd.idx(self.segment_queues[robot_id].earliest_seen + self.time_eps)
-        self.times[robot_id] = sorted_times[earliest_seen_idx:]
-        self.poses[robot_id] = sorted_poses[earliest_seen_idx:]
-        
-        submap = Submap(
-            id=submap_id,
-            time=submap_ref_time,
-            pose_flu=submap_ref_pose,
-            segments=[],
-            segment_frame='submap_gravity_aligned'
-        )
-        for seg_i in seg_update_res.submap_segments:
-            segment = deepcopy(seg_i)
-            segment.transform(np.linalg.inv(submap.pose_gravity_aligned))
-            submap.segments.append(segment)
-        if self.submap_align_params.submap_descriptor == 'mean_semantic':
-            submap.descriptor = \
-                np.mean([seg.semantic_descriptor.flatten() for seg in submap.segments], axis=0)
-            submap.descriptor /= np.linalg.norm(submap.descriptor)
-        elif self.submap_align_params.submap_descriptor is not None:
-            # sort descriptor buffer
-            sorted_descriptors = sorted(self.descriptors[robot_id])
-            descriptor_times, descriptor_poses, descriptors = zip(*sorted_descriptors)
-
-            # extract submap descriptor
-            extract_submap_descriptors(
-                submaps=[submap],
-                descriptor_times=descriptor_times,
-                descriptors=descriptors,
-                poses=descriptor_poses,
-                submap_params=self.submap_params
-            )
-
-            # refresh descriptor buffer
-            pd = PoseData.from_times_and_poses(descriptor_times, descriptor_poses, interp=False, time_tol=1e3, causal=True)
-            earliest_seen_idx = pd.idx(self.segment_queues[robot_id].earliest_seen + self.time_eps)
-            self.descriptors[robot_id] = list(sorted_descriptors)[earliest_seen_idx:]
-
-        # share the ego robot's new submap with the team
-        if robot_id == self.ego_id:
-            self.submap_pub.publish(submap_to_msg(robot_id, submap, self.odom_frames[robot_id]))
-
-        self.handle_new_submap(submap, robot_id)
 
     def submap_cb(self, submap_msg: roman_msgs.Submap, robot_id: int):
         """
-        Callback function for submap messages from teammates (share_type "submaps").
+        Receive mapper-built submaps from ego or a teammate and trigger loop closure.
         """
         detection_time_info_str = f"Last detection time: {self.last_lc_time} ms" \
             if self.last_lc_time is not None else "No loop closure detection run yet."
@@ -421,12 +200,14 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         if submap_msg.robot_id != robot_id:
             self.get_logger().warning(f"Submap message on robot {robot_id}'s topic says robot id "
                                       f"{submap_msg.robot_id}; using {robot_id}.")
+        if self.submap_align_params.submap_descriptor is not None and submap.descriptor is None:
+            self.get_logger().warning(f"Submap {submap.id} from robot {robot_id} has no descriptor; skipping it.")
+            return
         self.handle_new_submap(submap, robot_id)
 
     def handle_new_submap(self, submap: Submap, robot_id: int):
         """
-        Store a new submap (built here or received from a teammate) and run loop closure
-        detection with it.
+        Store a received submap and run loop closure detection with it.
         """
         self.submaps[robot_id].append(submap)
 
@@ -449,12 +230,6 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
             self.log_and_send_status(f"No loop closures found for robot {robot_id}, submap {submap.id}. Detection time: {self.last_lc_time} ms")
         self.new_lc_flag = False
             
-    def descriptor_cb(self, descriptor_msg: roman_msgs.FrameDescriptor, robot_id: int):
-        """
-        Callback function for frame descriptor messages.
-        """
-        self.descriptors[robot_id].append(frame_descriptor_from_msg(descriptor_msg)) # (time, pose, descriptor)
-
     def run_submap_registration(self, submap: Submap, robot_id: int, other_id: int):
         submap2: Submap
 
@@ -498,9 +273,16 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                     segments2 = [seg for seg in segments2 if seg.id not in segments1_ids]
                 associations = self.roman_reg.register(segments1, segments2)
                 T_submapgrav1_submapgrav2 = self.roman_reg.T_align(
-                    segments1, segments2, associations)
-                if self.submap_align_params.force_rm_lc_roll_pitch:
+                    segments1, segments2, associations,
+                    xyz_yaw_only=(self.submap_align_params.icp_on_submap_pcds and
+                                  self.submap_align_params.force_rm_lc_roll_pitch))
+                if (self.submap_align_params.force_rm_lc_roll_pitch and
+                        not self.submap_align_params.icp_on_submap_pcds):
                     T_submapgrav1_submapgrav2 = transform_rm_roll_pitch(T_submapgrav1_submapgrav2)
+                if self.submap_align_params.icp_on_submap_pcds:
+                    T_submapgrav1_submapgrav2 = self.roman_reg.refine_with_icp(
+                        T_submapgrav1_submapgrav2, submap.point_cloud, submap2.point_cloud,
+                        xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch)
             except InsufficientAssociationsException:
                 continue
 

@@ -113,9 +113,9 @@ class ROMANAlignNode(Node):
         
         # ros subscribers
         self.segment_subs = [
-            self.create_subscription(roman_msgs.Segment, f"/{self.robot1}/roman/segment_updates", 
+            self.create_subscription(roman_msgs.Segment, f"/{self.robot1}/roman/segment_update",
                                      lambda msg: self.seg_cb(msg, self.robot1), 20),
-            self.create_subscription(roman_msgs.Segment, f"/{self.robot2}/roman/segment_updates", 
+            self.create_subscription(roman_msgs.Segment, f"/{self.robot2}/roman/segment_update",
                                       lambda msg: self.seg_cb(msg, self.robot2), 20),
         ]
         
