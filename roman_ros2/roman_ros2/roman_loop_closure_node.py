@@ -259,6 +259,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         self.log_and_send_status(f"Attempting to register {len(other_submaps)} " + 
                                  f"submaps between robot ids: ({robot_id}, {other_id})")
 
+        icp_target = None
         for submap2 in other_submaps:
 
             # run registration
@@ -279,15 +280,30 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                 if (self.submap_align_params.force_rm_lc_roll_pitch and
                         not self.submap_align_params.icp_on_submap_pcds):
                     T_submapgrav1_submapgrav2 = transform_rm_roll_pitch(T_submapgrav1_submapgrav2)
-                if self.submap_align_params.icp_on_submap_pcds:
-                    T_submapgrav1_submapgrav2 = self.roman_reg.refine_with_icp(
-                        T_submapgrav1_submapgrav2, submap.point_cloud, submap2.point_cloud,
-                        xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch)
             except InsufficientAssociationsException:
                 continue
 
             if len(associations) < self.lc_required_associations:
                 continue
+
+            # ICP only for pairs that will become loop closures; the target (this submap's
+            # cloud with normals) is prepared once and reused for every candidate
+            if self.submap_align_params.icp_on_submap_pcds:
+                if icp_target is None:
+                    icp_target = self.roman_reg.prepare_icp_cloud(submap.point_cloud)
+                t0 = time.time()
+                T_object = T_submapgrav1_submapgrav2
+                T_submapgrav1_submapgrav2 = self.roman_reg.refine_with_icp(
+                    T_object, submap.point_cloud, submap2.point_cloud,
+                    xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch, target_pcd=icp_target)
+                dT = T_submapgrav1_submapgrav2 @ inv(T_object)
+                kept = np.allclose(dT, np.eye(4))
+                self.get_logger().info(
+                    f"ICP ({robot_id}, {other_id}) submaps ({submap.id}, {submap2.id}): " +
+                    ("kept object alignment" if kept else
+                     f"refined by {np.linalg.norm(dT[:3, 3]):.3f} m, "
+                     f"{np.degrees(np.arctan2(dT[1, 0], dT[0, 0])):+.2f} deg yaw") +
+                    f" ({1000 * (time.time() - t0):.0f} ms)")
 
             self.log_and_send_status(f"Found {len(associations)} associations between robot_ids: " + 
                 f"({robot_id}, {other_id}) and submaps: ({submap.id}, {submap2.id}).")
