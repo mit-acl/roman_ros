@@ -20,7 +20,7 @@ pip install transforms3d gdown
 # download weights
 mkdir -p $ROMAN_ROS_DIR/weights
 cd $ROMAN_ROS_DIR/weights
-wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7.pt
+wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8m.pt
 gdown 'https://drive.google.com/uc?id=1m1sjY4ihXBU1fZXdQ-Xdj-mDltW-2Rqv'
 
 # maybe handle this somewhere else
