@@ -1,5 +1,7 @@
 /**:
   ros__parameters:
+    submap_num_segments: 40
+    submap_overlapping_segments: 20
     odom_frame_id: $(var robot_name)/odom
     base_flu_frame_id: $(var camera)_link
     use_multiple_cams: false

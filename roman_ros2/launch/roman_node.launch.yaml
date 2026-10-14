@@ -30,6 +30,7 @@ launch:
         - from: $(var config_dir)/roman_map_node.yaml
           allow_substs: true
         - {name: output_roman_map, value: $(var output_dir)/roman_map.pkl}
+        - {name: submap_config_path, value: $(var config_dir)/roman_loop_closure.yaml}
 
   - node:
       if: $(var launch_loop_closure)

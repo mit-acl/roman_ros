@@ -1,5 +1,7 @@
 /**:
   ros__parameters:
+    submap_num_segments: 40
+    submap_overlapping_segments: 20
     odom_frame_id: odom
     base_flu_frame_id: zed_camera_link
     use_multiple_cams: false
