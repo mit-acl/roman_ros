@@ -21,7 +21,6 @@ from pose_graph_tools_msgs.msg import PoseGraph
 from roman.align.object_registration import InsufficientAssociationsException
 
 from roman.params.submap_align_params import SubmapAlignParams
-from roman.utils import transform_rm_roll_pitch
 from roman.map.map import Submap, ROMANMap, submaps_from_roman_map, SubmapParams
 
 # Local imports
@@ -275,11 +274,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                 associations = self.roman_reg.register(segments1, segments2)
                 T_submapgrav1_submapgrav2 = self.roman_reg.T_align(
                     segments1, segments2, associations,
-                    xyz_yaw_only=(self.submap_align_params.icp_on_submap_pcds and
-                                  self.submap_align_params.force_rm_lc_roll_pitch))
-                if (self.submap_align_params.force_rm_lc_roll_pitch and
-                        not self.submap_align_params.icp_on_submap_pcds):
-                    T_submapgrav1_submapgrav2 = transform_rm_roll_pitch(T_submapgrav1_submapgrav2)
+                    xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch)
             except InsufficientAssociationsException:
                 continue
 
