@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 import numpy as np
+import open3d as o3d
 import os
 import cv2 as cv
 import copy
-import struct
 import pickle
 import time
-import signal
 from pathlib import Path
 from scipy.spatial.transform import Rotation as Rot
 
@@ -15,10 +14,8 @@ from scipy.spatial.transform import Rotation as Rot
 import rclpy
 from rclpy.node import Node
 import cv_bridge
-import message_filters
 import ros2_numpy as rnp
-from rcl_interfaces.msg import ParameterDescriptor
-from rclpy.qos import QoSProfile
+from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
@@ -27,8 +24,6 @@ import time
 
 # ROS msgs
 import std_msgs.msg as std_msgs
-import geometry_msgs.msg as geometry_msgs
-import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
 import roman_msgs.msg as roman_msgs
 import visualization_msgs.msg as visualization_msgs
@@ -38,15 +33,17 @@ from ros_system_monitor_msgs.msg import NodeInfoMsg
 from robotdatapy.camera import CameraParams
 
 # ROMAN
-from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.map.mapper import Mapper, MapperParams
-from roman.map.map import ROMANMap
+from roman.map.map import SubmapParams, aggregate_submap_point_cloud
+from roman.params.submap_align_params import SubmapAlignParams
+from roman.utils import DepthProjectionMetadata
 from roman.object.segment import Segment
 from roman.viz import visualize_segment_on_img
 
 # relative
 from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, segment_to_msg, \
-    time_stamp_to_float, TimingFifo
+    msg_to_segment, submap_to_msg, time_stamp_to_float, TimingFifo
+from roman_ros2.submap_builder import SubmapBuilder
 
 class RomanMapNode(Node):
 
@@ -60,6 +57,9 @@ class RomanMapNode(Node):
             parameters=[
                 ("robot_id", 0),                        # robot id for this node
                 ("config_path", ""),                    # non-ros ROMAN mapper.yaml param file
+                ("submap_config_path", ""),             # submap descriptor settings from ROMAN alignment yaml
+                ("submap_num_segments", 40),
+                ("submap_overlapping_segments", 20),
                 ("visualize", False),                   # whether to publish annotated images
                 ("output_roman_map", ""),               # output file to save the map to (must kill node with ctrl-c)
                 ("odom_frame_id", "odom"),              # odometry frame id to map objects in
@@ -69,6 +69,7 @@ class RomanMapNode(Node):
                 ("nickname", "roman_map"),              # nickname for this node
                 ("use_multiple_cams", False),           # whether mapper will get FastSAM measurements from multiple cameras
                 ("timing_window", 10),                  # timing window used for report processing speed
+                ("depth_pcd_stride", 4),                # depth pixels sampled for cloud aggregation
                 ("viz_num_objs", 20),                   # maximum number of objects to visualize
                 ("viz_pts_per_obj", 250),               # number of points to visualize per object
                 ("viz_min_viz_dt", 0.25),               # minimum time between visualizations
@@ -86,18 +87,29 @@ class RomanMapNode(Node):
         self.output_file = self.get_parameter("output_roman_map").value
         self.object_ref = self.get_parameter("object_ref").value
         self.base_flu_frame_id = self.get_parameter("base_flu_frame_id").value
+        self.odom_frame_id = self.get_parameter("odom_frame_id").value
         self.publish_active_segments = self.get_parameter("publish_active_segments").value
         self.nickname = self.get_parameter("nickname").value
         self.use_multiple_cams = self.get_parameter("use_multiple_cams").value
         timing_window = self.get_parameter("timing_window").value
         self.timing_fifo = TimingFifo(timing_window)
+        self.depth_pcd_stride = self.get_parameter("depth_pcd_stride").value
+        if self.depth_pcd_stride < 1:
+            raise ValueError("depth_pcd_stride must be positive")
+
         config_path = self.get_parameter("config_path").value
+        submap_config_path = self.get_parameter("submap_config_path").value
+        align_params = (SubmapAlignParams.from_yaml(submap_config_path)
+                        if submap_config_path else SubmapAlignParams())
+        self.submap_params = SubmapParams.from_submap_align_params(align_params)
+        self.submap_builder = SubmapBuilder(
+            self.get_parameter("submap_num_segments").value,
+            self.get_parameter("submap_overlapping_segments").value,
+            self.submap_params)
         
         assert self.base_flu_frame_id != "", "base_flu_frame_id must be set"
 
         self.viz_object_map = self.get_parameter("viz_object_map").value
-        if self.visualize or self.viz_object_map:
-            self.odom_frame_id = self.get_parameter("odom_frame_id").value
         if self.visualize:
             self.viz_num_objs = self.get_parameter("viz_num_objs").value
             self.viz_pts_per_obj = self.get_parameter("viz_pts_per_obj").value
@@ -150,7 +162,8 @@ class RomanMapNode(Node):
     def setup_ros(self):
 
         # ros publishers
-        self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_updates", qos_profile=10)
+        self.segments_pub = self.create_publisher(roman_msgs.Segment, "roman/segment_update", qos_profile=10)
+        self.submap_pub = self.create_publisher(roman_msgs.Submap, "roman/submap", qos_profile=20)
         self.pulse_pub = self.create_publisher(std_msgs.Empty, "roman/pulse", qos_profile=10)
 
         # ros tf
@@ -166,6 +179,17 @@ class RomanMapNode(Node):
         # ros subscribers
         self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
                                  callback_group=self.obs_cb_group)
+
+        if self.mapper.params.store_aggregated_pcds:
+            self.depth_camera_info = None
+            self.depth_bridge = cv_bridge.CvBridge()
+            self.last_depth_time = -np.inf
+            self.depth_info_sub = self.create_subscription(
+                sensor_msgs.CameraInfo, "depth/camera_info", self.depth_info_cb,
+                qos_profile_sensor_data, callback_group=self.obs_cb_group)
+            self.depth_sub = self.create_subscription(
+                sensor_msgs.Image, "depth/image_raw", self.depth_cb,
+                qos_profile_sensor_data, callback_group=self.obs_cb_group)
 
         # visualization
         if self.visualize:
@@ -211,6 +235,11 @@ class RomanMapNode(Node):
             f"Avg time (ms): {np.round(self.timing_fifo.mean()*1000)}")
             if len(self.timing_fifo) > 0 else f"Map size: {map_size}",)
         self.pulse_pub.publish(std_msgs.Empty())
+
+        frame_descriptor = descriptor_from_array_msg(obs_array_msg.frame_descriptor)
+        self.submap_builder.update_frame(
+            time_stamp_to_float(obs_array_msg.header.stamp),
+            rnp.numpify(obs_array_msg.pose_flu).astype(np.float64), frame_descriptor)
         
         if len(obs_array_msg.observations) == 0:
             return
@@ -232,8 +261,6 @@ class RomanMapNode(Node):
         else:
             pose = rnp.numpify(obs_array_msg.pose_flu) # base link frame
 
-        frame_descriptor = descriptor_from_array_msg(obs_array_msg.frame_descriptor)
-
         self.mapper.update(time_stamp_to_float(obs_array_msg.header.stamp), pose, observations, frame_descriptor)
         updated_inactive_ids = [segment.id for segment in self.mapper.inactive_segments]
         new_inactive_ids = [seg_id for seg_id in updated_inactive_ids if seg_id not in inactive_ids]
@@ -248,11 +275,58 @@ class RomanMapNode(Node):
             for segment in self.mapper.segments:
                 self.publish_segment(segment)
         self.timing_fifo.update(time.time() - start_t)
-        
+
+    def depth_info_cb(self, msg: sensor_msgs.CameraInfo):
+        self.depth_camera_info = msg
+
+    def depth_cb(self, msg: sensor_msgs.Image):
+        """Project a depth image and feed the mapper's independent scan window."""
+        if not self.up or self.depth_camera_info is None:
+            return
+        t = time_stamp_to_float(msg.header.stamp)
+        if t <= self.last_depth_time:
+            return
+        info = self.depth_camera_info
+        if (info.width != msg.width or info.height != msg.height or
+                (info.header.frame_id and info.header.frame_id != msg.header.frame_id)):
+            self.get_logger().warning("Depth image and camera info dimensions/frames do not match.")
+            return
+        fx, fy, cx, cy = info.k[0], info.k[4], info.k[2], info.k[5]
+        if not np.all(np.isfinite([fx, fy, cx, cy])) or fx <= 0 or fy <= 0:
+            self.get_logger().warning("Invalid depth camera intrinsics.")
+            return
+        if msg.encoding not in ('16UC1', '32FC1'):
+            self.get_logger().warning(f"Unsupported depth encoding: {msg.encoding}")
+            return
+        try:
+            tf_msg = self.tf_buffer.lookup_transform(
+                self.odom_frame_id, msg.header.frame_id, msg.header.stamp,
+                rclpy.duration.Duration(seconds=0.5))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as ex:
+            self.get_logger().warning(f"Depth TF lookup failed: {ex}")
+            return
+        depth = self.depth_bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        intrinsics = o3d.camera.PinholeCameraIntrinsic(info.width, info.height, fx, fy, cx, cy)
+        metadata = DepthProjectionMetadata(self.depth_pcd_stride,
+            1000.0 if msg.encoding == '16UC1' else 1.0, intrinsics)
+        self.mapper.update_point_cloud(t, rnp.numpify(tf_msg.transform).astype(np.float64),
+            depth, is_depth_img=True, depth_projection_metadata=metadata)
+        self.last_depth_time = t
+
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
             segment.set_center_ref('bottom_middle')
-        self.segments_pub.publish(segment_to_msg(self.robot_id, segment))
+        segment_msg = segment_to_msg(self.robot_id, segment)
+        self.segments_pub.publish(segment_msg)
+        submap = self.submap_builder.update_segment(msg_to_segment(segment_msg))
+        if submap is not None:
+            if self.submap_params.submap_descriptor is not None and submap.descriptor is None:
+                self.get_logger().warning(f"Submap {submap.id} has no descriptor; check FastSAM descriptor settings.")
+            if self.mapper.params.store_aggregated_pcds:
+                aggregate_submap_point_cloud(submap, self.mapper.aggregated_point_clouds,
+                                             self.submap_params.point_cloud_voxel_size)
+            self.submap_pub.publish(submap_to_msg(self.robot_id, submap, self.odom_frame_id, self.base_flu_frame_id))
 
     def viz_cb(self, img_msg):
         """

@@ -1,16 +1,10 @@
 /**:
   ros__parameters:
-    submap_num_segments: 40
-    submap_overlapping_segments: 20
     lc_required_associations: 6
     ego_id: 0
     ego_name: $(var robot_name)
-    ego_flu_ref_frame: $(var camera)_link
-    ego_odom_frame: $(var robot_name)/odom
     team_ids: [0]
     team_names: ['']
-    team_flu_ref_frames: ['']
-    team_odom_frames: ['']
     prior_session_maps: ['']
     prior_session_ids: [0]
     submap_knn: 5

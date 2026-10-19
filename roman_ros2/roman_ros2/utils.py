@@ -11,10 +11,13 @@ import std_msgs.msg as std_msgs
 import visualization_msgs.msg as visualization_msgs
 from pose_graph_tools_msgs.msg import PoseGraph, PoseGraphEdge
 
+from sensor_msgs_py import point_cloud2
+
 import ros2_numpy as rnp
 
 from roman.map.observation import Observation
 from roman.map.map import Submap
+from roman.utils import transform_rm_roll_pitch
 from roman.object.segment import Segment, SegmentMinimalData
 
 class MapColors:
@@ -139,19 +142,22 @@ def frame_descriptor_from_msg(descriptor_msg: roman_msgs.FrameDescriptor) -> Tup
 """
 segment.msg
 
-std_msgs/Header header
+std_msgs/Header header # header.stamp: same as last_seen
 int32 robot_id
 int32 segment_id
+float64 first_seen # first time the segment was seen (s)
+float64 last_seen # last time the segment was seen (s)
 geometry_msgs/Point position  # Position in odom frame
 float64 volume
 """
 
-def segment_to_msg(robot_id: int, segment: Segment):
+def segment_to_msg(robot_id: int, segment: Union[Segment, SegmentMinimalData]):
     """
     Convert segment data class to segment message
 
     Args:
-        segment (Segment): segment data class
+        robot_id (int): id of the robot the segment belongs to
+        segment (Union[Segment, SegmentMinimalData]): full or minimal-data segment
 
     Returns:
         roman_msgs.Segment: segment message
@@ -160,7 +166,11 @@ def segment_to_msg(robot_id: int, segment: Segment):
         header=std_msgs.Header(stamp=float_to_ros_time(segment.last_seen)),
         robot_id=robot_id,
         segment_id=segment.id,
-        position=rnp.msgify(geometry_msgs.Point, centroid_from_segment(segment)),
+        first_seen=float(segment.first_seen),
+        last_seen=float(segment.last_seen),
+        # full segments compute their center from points (respecting center ref);
+        # minimal-data segments return the stored center
+        position=rnp.msgify(geometry_msgs.Point, np.asarray(segment.center, dtype=np.float64).reshape(3)),
         # volume=estimate_volume(segment.points) if segment.points is not None else 0.0,
         volume=segment.volume,
         shape_attributes=[segment.volume, segment.linearity, segment.planarity, segment.scattering],
@@ -187,27 +197,80 @@ def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
         scattering=segment_msg.shape_attributes[3],
         semantic_descriptor=np.array(segment_msg.semantic_descriptor) if len(segment_msg.semantic_descriptor) != 0 else None,
         extent=None,
-        first_seen=None,
-        last_seen=time_stamp_to_float(segment_msg.header.stamp),
+        first_seen=segment_msg.first_seen,
+        last_seen=segment_msg.last_seen,
     )
     return segment
 
-def centroid_from_segment(segment: Segment):
+def submap_to_msg(robot_id: int, submap: Submap, odom_frame: str, flu_frame: str) -> roman_msgs.Submap:
     """
-    Method to get a single point representing a segment.
+    Serialize ROMAN's gravity-aligned segments in the true submap reference frame.
 
     Args:
-        segment (Segment): segment object
+        robot_id (int): id of the robot the submap belongs to
+        submap (Submap): submap whose segments are SegmentMinimalData or Segments
+        odom_frame (str): odometry frame the submap pose is expressed in
+        flu_frame (str): robot FLU reference frame at the submap reference time
 
     Returns:
-        np.array, shape=(3,): representative point
+        roman_msgs.Submap: submap message
     """
-    if segment.points is not None:
-        pt = np.mean(segment.points, axis=0)
-        return pt
-    else:
-        return None
-    
+    assert submap.segment_frame == 'submap_gravity_aligned', \
+        f"ERROR: expected segments in the submap gravity-aligned frame, got {submap.segment_frame}."
+    T_submap_gravity = np.linalg.inv(submap.pose_flu) @ submap.pose_gravity_aligned
+    segment_msgs = [segment_to_msg(robot_id, seg) for seg in submap.segments]
+    for msg in segment_msgs:
+        position = rnp.numpify(msg.position).reshape(3)
+        msg.position = rnp.msgify(geometry_msgs.Point,
+            T_submap_gravity[:3, :3] @ position + T_submap_gravity[:3, 3])
+    submap_msg = roman_msgs.Submap(
+        header=std_msgs.Header(stamp=float_to_ros_time(submap.time), frame_id=flu_frame),
+        odom_frame_id=odom_frame,
+        robot_id=robot_id,
+        submap_id=submap.id,
+        segments=segment_msgs,
+        submap_pose=rnp.msgify(geometry_msgs.Pose, submap.pose_flu),
+        descriptors=descriptor_to_array_msg(submap.descriptor),
+    )
+    if submap.point_cloud is not None:
+        points = (submap.point_cloud @ T_submap_gravity[:3, :3].T +
+                  T_submap_gravity[:3, 3])
+        submap_msg.point_cloud = [point_cloud2.create_cloud_xyz32(
+            submap_msg.header, points.astype(np.float32))]
+    return submap_msg
+
+def msg_to_submap(submap_msg: roman_msgs.Submap) -> Submap:
+    """
+    Convert true submap-frame message segments to gravity-aligned ROMAN segments.
+
+    Args:
+        submap_msg (roman_msgs.Submap): submap message
+
+    Returns:
+        Submap: submap with SegmentMinimalData segments
+    """
+    pose_flu = rnp.numpify(submap_msg.submap_pose).astype(np.float64)
+    pose_gravity = transform_rm_roll_pitch(pose_flu)
+    T_gravity_submap = np.linalg.inv(pose_gravity) @ pose_flu
+    segments = [msg_to_segment(msg) for msg in submap_msg.segments]
+    for segment in segments:
+        segment.transform(T_gravity_submap)
+    points = None
+    if submap_msg.point_cloud:
+        points = point_cloud2.read_points_numpy(
+            submap_msg.point_cloud[0], field_names=('x', 'y', 'z'), skip_nans=True)
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        points = points @ T_gravity_submap[:3, :3].T + T_gravity_submap[:3, 3]
+    return Submap(
+        id=submap_msg.submap_id,
+        time=time_stamp_to_float(submap_msg.header.stamp),
+        segments=segments,
+        pose_flu=pose_flu,
+        segment_frame='submap_gravity_aligned',
+        point_cloud=points,
+        descriptor=descriptor_from_array_msg(submap_msg.descriptors),
+    )
+
 def estimate_volume(points, axis_discretization=10):
     """Estimate the volume by voxelizing the bounding box and checking whether sampled points 
     are inside each voxel"""

@@ -15,6 +15,8 @@
   <build_depend>std_msgs</build_depend>
   <build_depend>geometry_msgs</build_depend>
 
+  <depend>sensor_msgs</depend>
+
   <!-- Execution dependencies -->
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>

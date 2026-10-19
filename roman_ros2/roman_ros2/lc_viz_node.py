@@ -69,6 +69,10 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
             ]
         )
 
+        # Frame pairs are learned from each live robot's submap messages.
+        self.flu_ref_frames = {}
+        self.odom_frames = {}
+
         self.aligned_traj_viz = self.get_parameter("aligned_traj_viz").value
         self.lc_marker_viz = self.get_parameter("lc_marker_viz").value
         self.output_dir = Path(expandvars_recursive(self.get_parameter("output_dir").value))
@@ -126,8 +130,23 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         # ros subscribers
         self.create_subscription(roman_msgs.LoopClosure, 
                 "roman/roman_lc/loop_closure", self.lc_cb, qos_profile=QoSProfile(depth=10))
+        self.submap_subs = [
+            self.create_subscription(roman_msgs.Submap, f"/{robot_name}/roman/submap",
+                                     lambda msg, rid=robot_id: self.submap_cb(msg, rid), 20)
+            for robot_name, robot_id in zip(self.live_names, self.live_ids)
+        ]
         self.timer = self.create_timer(self.pose_update_dt, self.timer_cb)
 
+
+    def submap_cb(self, submap_msg: roman_msgs.Submap, robot_id: int):
+        if submap_msg.robot_id != robot_id:
+            self.get_logger().warning("Submap robot ID does not match its subscribed topic.")
+            return
+        if not submap_msg.odom_frame_id or not submap_msg.header.frame_id:
+            self.get_logger().warning("Submap is missing its odometry or FLU reference frame.")
+            return
+        self.odom_frames[robot_id] = submap_msg.odom_frame_id
+        self.flu_ref_frames[robot_id] = submap_msg.header.frame_id
 
     def _should_viz_lc(self, robot1_id, robot2_id):
         if self.viz_robot_ids is None:
@@ -138,6 +157,11 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
     def lc_cb(self, lc_msg: roman_msgs.LoopClosure):
 
         if not self._should_viz_lc(lc_msg.robot1_id, lc_msg.robot2_id):
+            return
+
+        if any(self.trajectories.get(rid) is None
+               for rid in (lc_msg.robot1_id, lc_msg.robot2_id)):
+            self.get_logger().warning("Skipping loop closure visualization until trajectories are available.")
             return
 
         # publish cube marker at ego robot's pose
@@ -153,7 +177,7 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
             if ego_time is not None and ego_traj is not None:
                 T_odom_ego = ego_traj.pose(ego_time)
                 marker = visualization_msgs.Marker()
-                marker.header.frame_id = self.ego_odom_frame
+                marker.header.frame_id = self.odom_frames[self.ego_id]
                 marker.header.stamp = self.get_clock().now().to_msg()
                 marker.ns = "lc_markers"
                 marker.id = self.lc_marker_id
@@ -241,10 +265,11 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
             self.lc_marker_pub.publish(visualization_msgs.MarkerArray(markers=self.lc_markers))
 
         # record times and poses
-        curr_time = self.get_clock().now()
-        curr_time_float = time_stamp_to_float(curr_time.to_msg())
+        curr_time = rclpy.time.Time() # latest available TF
 
         for robot_id in self.live_ids:
+            if robot_id not in self.odom_frames:
+                continue
                 
             try:
                 T_odom_flu_msg = self.tf_buffer.lookup_transform(self.odom_frames[robot_id], 
@@ -252,7 +277,11 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
                 # self.get_logger().warning("tf lookup failed")
                 # print(ex)
-                return
+                continue
+            curr_time_float = time_stamp_to_float(T_odom_flu_msg.header.stamp)
+            if (self.trajectories[robot_id] is not None and
+                    curr_time_float <= self.trajectories[robot_id].times[-1]):
+                continue
             T_odom_flu = rnp.numpify(T_odom_flu_msg.transform).astype(np.float64)
             if self.trajectories[robot_id] is None:
                 self.trajectories[robot_id] = PoseData.from_times_and_poses(np.array([curr_time_float]), np.array([T_odom_flu]), time_tol=np.inf)
