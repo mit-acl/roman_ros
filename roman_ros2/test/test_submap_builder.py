@@ -7,7 +7,7 @@ from scipy.spatial.transform import Rotation
 
 from roman.map.map import SubmapParams
 from roman.object.segment import SegmentMinimalData
-from roman_ros2.submap_builder import SegmentQueue, SubmapBuilder
+from roman_ros2.submap_builder import NoKeyframeError, SegmentQueue, SubmapBuilder
 
 
 def segment(identifier, t0=0., tf=2., center=None, descriptor=None):
@@ -103,6 +103,42 @@ class SubmapBuilderTests(unittest.TestCase):
         submap = builder.update_segment(segment(1))
         np.testing.assert_equal(submap.descriptor, [[0, 1], [2, 1]])
 
+    def test_keyframe_reference_uses_nearest_keyframe_in_span(self):
+        builder = SubmapBuilder(2, 0, SubmapParams(), reference_by_keyframe=True)
+        builder.update_frame(1., np.eye(4))
+        keyframe_pose = np.eye(4)
+        keyframe_pose[:3, 3] = [1, 2, 0]
+        builder.update_keyframe(5., np.eye(4))      # outside the segments' span
+        builder.update_keyframe(0.5, np.eye(4))     # farther from the mean reference time
+        builder.update_keyframe(1.2, keyframe_pose)
+        builder.update_segment(segment(0, t0=0, tf=2, center=np.array([2., 2., 1.])))
+        submap = builder.update_segment(segment(1, t0=0, tf=2))
+        self.assertEqual(submap.time, 1.2)
+        np.testing.assert_equal(submap.pose_flu, keyframe_pose)
+        np.testing.assert_allclose(submap.segments[0].center.flatten(), [1, 0, 1], atol=1e-12)
+
+    def test_keyframe_reference_without_keyframe_in_span(self):
+        builder = SubmapBuilder(2, 0, SubmapParams(), reference_by_keyframe=True)
+        builder.update_frame(1., np.eye(4))
+        builder.update_keyframe(5., np.eye(4))
+        builder.update_segment(segment(0))
+        with self.assertRaises(NoKeyframeError):
+            builder.update_segment(segment(1))
+        self.assertEqual((builder.next_submap_id, builder.segment_queue.segments), (0, {}))
+        builder.update_keyframe(1., np.eye(4))
+        builder.update_segment(segment(2))
+        self.assertEqual(builder.update_segment(segment(3)).id, 0)
+
+    def test_keyframe_history_pruned_with_frame_history(self):
+        builder = SubmapBuilder(2, 1, SubmapParams(), reference_by_keyframe=True)
+        for time in (0., 1., 2., 3., 4.):
+            builder.update_frame(time, np.eye(4))
+            builder.update_keyframe(time, np.eye(4))
+        builder.update_segment(segment(0, t0=0, tf=1))
+        builder.update_segment(segment(1, t0=3, tf=4))
+        self.assertEqual(sorted(builder.keyframes), [2., 3., 4.])
+        self.assertEqual(sorted(builder.keyframes), sorted(builder.poses))
+
     def test_pose_required_and_empty_descriptor_buffer(self):
         builder = SubmapBuilder(1, 0, SubmapParams(submap_descriptor='mean_frame_descriptor'))
         with self.assertRaises(ValueError):
@@ -131,6 +167,54 @@ class SubmapCallbackTests(unittest.TestCase):
         self.assertEqual((msg.robot_id, msg.submap_id, msg.header.frame_id), (7, 0, 'robot/base_link'))
         self.assertEqual(msg.odom_frame_id, 'robot/odom')
         self.assertEqual(len(msg_to_submap(msg).segments), 2)
+
+    def test_keyframe_submap_published_at_keyframe(self):
+        import geometry_msgs.msg as geometry_msgs
+        import ros2_numpy as rnp
+        from builtin_interfaces.msg import Time
+        from roman_ros2.roman_map_node import RomanMapNode
+        from roman_ros2.utils import time_stamp_to_float
+
+        builder = SubmapBuilder(2, 0, SubmapParams(), reference_by_keyframe=True)
+        node = SimpleNamespace(up=True, object_ref='center', robot_id=7, odom_frame_id='robot/odom',
+                               base_flu_frame_id='robot/base_link', segments_pub=Mock(), submap_pub=Mock(),
+                               submap_builder=builder, submap_params=builder.params, get_logger=Mock(),
+                               mapper=SimpleNamespace(params=SimpleNamespace(store_aggregated_pcds=False)))
+        stamp = Time(sec=1761580000, nanosec=500000000)
+        t = time_stamp_to_float(stamp)
+        builder.update_frame(t - 0.5, np.eye(4))
+        keyframe_pose = np.eye(4)
+        keyframe_pose[:3, 3] = [1, 2, 0]
+        msg = geometry_msgs.TransformStamped(child_frame_id='robot/base_link')
+        msg.header.frame_id, msg.header.stamp = 'robot/odom', stamp
+        msg.transform.translation.x, msg.transform.translation.y = 1., 2.
+        msg.transform.rotation.w = 1.
+        RomanMapNode.keyframe_cb(node, msg)
+        RomanMapNode.publish_segment(node, segment(0, t0=t - 1, tf=t + 1))
+        RomanMapNode.publish_segment(node, segment(1, t0=t - 1, tf=t + 1))
+        submap_msg = node.submap_pub.publish.call_args.args[0]
+        self.assertEqual((submap_msg.header.stamp.sec, submap_msg.header.stamp.nanosec), (1761580000, 500000000))
+        np.testing.assert_allclose(rnp.numpify(submap_msg.submap_pose), keyframe_pose, atol=1e-12)
+
+        # a keyframe outside the span drops the submap
+        RomanMapNode.publish_segment(node, segment(2, t0=t + 10, tf=t + 11))
+        RomanMapNode.publish_segment(node, segment(3, t0=t + 10, tf=t + 11))
+        node.submap_pub.publish.assert_called_once()
+        node.get_logger.return_value.warning.assert_called_once()
+
+    def test_keyframe_with_wrong_frames_raises(self):
+        import geometry_msgs.msg as geometry_msgs
+        from roman_ros2.roman_map_node import RomanMapNode
+
+        node = SimpleNamespace(up=True, odom_frame_id='robot/odom', base_flu_frame_id='robot/base_link',
+                               submap_builder=SubmapBuilder(2, 0, SubmapParams(), reference_by_keyframe=True))
+        for parent, child in (('/robot/odom', 'robot/base_link'), ('robot/odom', 'robot/imu'),
+                              ('robot/base_link', 'robot/odom')):
+            with self.subTest(parent=parent, child=child), self.assertRaises(ValueError):
+                msg = geometry_msgs.TransformStamped(child_frame_id=child)
+                msg.header.frame_id = parent
+                RomanMapNode.keyframe_cb(node, msg)
+        self.assertEqual(node.submap_builder.keyframes, {})
 
     def test_empty_observations_still_record_pose_and_descriptor(self):
         import geometry_msgs.msg as geometry_msgs

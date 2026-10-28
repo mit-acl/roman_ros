@@ -44,19 +44,29 @@ class SegmentQueue:
         return min((seg.first_seen for seg in self.segments.values()), default=None)
 
 
+class NoKeyframeError(Exception):
+    """A submap was completed but no keyframe lies within its segments' time span."""
+
+
 class SubmapBuilder:
     def __init__(self, submap_num_segments: int, submap_overlapping_segments: int,
-                 params: SubmapParams):
+                 params: SubmapParams, reference_by_keyframe: bool = False):
         self.segment_queue = SegmentQueue(submap_num_segments, submap_overlapping_segments)
         self.params = params
+        self.reference_by_keyframe = reference_by_keyframe
         self.poses = {}
         self.descriptors = {}
+        self.keyframes = {}
         self.next_submap_id = 0
 
     def update_frame(self, time: float, pose_flu: np.ndarray, descriptor: np.ndarray = None):
         self.poses[time] = pose_flu.copy()
         if descriptor is not None:
             self.descriptors[time] = descriptor.copy()
+
+    def update_keyframe(self, time: float, pose_flu: np.ndarray):
+        """Record an externally chosen keyframe (e.g. a pose graph node) to reference submaps to."""
+        self.keyframes[time] = pose_flu.copy()
 
     def update_segment(self, segment: SegmentMinimalData):
         if not self.poses:
@@ -66,11 +76,24 @@ class SubmapBuilder:
             return None
 
         reference_time = np.mean([seg.reference_time() for seg in result.submap_segments])
-        reference_time = min(self.poses, key=lambda time: (abs(time - reference_time), time))
+        if self.reference_by_keyframe:
+            # only keyframes the submap's segments were observed around may anchor it
+            first_seen = min(seg.first_seen for seg in result.submap_segments)
+            last_seen = max(seg.last_seen for seg in result.submap_segments)
+            times = [time for time in self.keyframes if first_seen <= time <= last_seen]
+            if not times:
+                self._prune_frame_history()
+                raise NoKeyframeError(
+                    f"No keyframe in submap time span [{first_seen:.3f}, {last_seen:.3f}]")
+            reference_time = min(times, key=lambda time: (abs(time - reference_time), time))
+            pose_flu = self.keyframes[reference_time]
+        else:
+            reference_time = min(self.poses, key=lambda time: (abs(time - reference_time), time))
+            pose_flu = self.poses[reference_time]
         submap = Submap(
             id=self.next_submap_id,
             time=reference_time,
-            pose_flu=self.poses[reference_time].copy(),
+            pose_flu=pose_flu.copy(),
             segments=deepcopy(result.submap_segments),
             segment_frame='submap_gravity_aligned',
         )
@@ -99,13 +122,20 @@ class SubmapBuilder:
         return submap
 
     def _prune_frame_history(self):
-        times = sorted(self.poses)
         earliest_seen = self.segment_queue.earliest_seen
-        if earliest_seen is None:
-            keep_from = times[-1]
-        else:
-            index = max(0, int(np.searchsorted(times, earliest_seen)) - 1)
-            keep_from = times[index]
+        keep_from = self._keep_from(self.poses, earliest_seen)
         self.poses = {time: pose for time, pose in self.poses.items() if time >= keep_from}
         self.descriptors = {time: descriptor for time, descriptor in self.descriptors.items()
                             if time >= keep_from}
+        if self.keyframes:
+            keep_from = self._keep_from(self.keyframes, earliest_seen)
+            self.keyframes = {time: keyframe for time, keyframe in self.keyframes.items()
+                              if time >= keep_from}
+
+    @staticmethod
+    def _keep_from(history, earliest_seen):
+        times = sorted(history)
+        if earliest_seen is None:
+            return times[-1]
+        index = max(0, int(np.searchsorted(times, earliest_seen)) - 1)
+        return times[index]

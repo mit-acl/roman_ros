@@ -24,6 +24,7 @@ import time
 
 # ROS msgs
 import std_msgs.msg as std_msgs
+import geometry_msgs.msg as geometry_msgs
 import sensor_msgs.msg as sensor_msgs
 import roman_msgs.msg as roman_msgs
 import visualization_msgs.msg as visualization_msgs
@@ -43,7 +44,7 @@ from roman.viz import visualize_segment_on_img
 # relative
 from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, segment_to_msg, \
     msg_to_segment, submap_to_msg, time_stamp_to_float, TimingFifo
-from roman_ros2.submap_builder import SubmapBuilder
+from roman_ros2.submap_builder import SubmapBuilder, NoKeyframeError
 
 class RomanMapNode(Node):
 
@@ -60,7 +61,9 @@ class RomanMapNode(Node):
                 ("submap_config_path", ""),             # submap descriptor settings from ROMAN alignment yaml
                 ("submap_num_segments", 40),
                 ("submap_overlapping_segments", 20),
-                ("visualize", False),                   # whether to publish annotated images
+                ("reference_submap_by_keyframe", False),  # reference submaps to the nearest keyframe (TransformStamped
+                                                          # odom<-base on "keyframe") instead of observation frame
+                ("visualize", False),                  # whether to publish annotated images
                 ("output_roman_map", ""),               # output file to save the map to (must kill node with ctrl-c)
                 ("odom_frame_id", "odom"),              # odometry frame id to map objects in
                 ("base_flu_frame_id", "base_link"),     # robot coordinate frame with xyz = forward left up
@@ -102,10 +105,12 @@ class RomanMapNode(Node):
         align_params = (SubmapAlignParams.from_yaml(submap_config_path)
                         if submap_config_path else SubmapAlignParams())
         self.submap_params = SubmapParams.from_submap_align_params(align_params)
+        self.reference_submap_by_keyframe = self.get_parameter("reference_submap_by_keyframe").value
         self.submap_builder = SubmapBuilder(
             self.get_parameter("submap_num_segments").value,
             self.get_parameter("submap_overlapping_segments").value,
-            self.submap_params)
+            self.submap_params,
+            reference_by_keyframe=self.reference_submap_by_keyframe)
         
         assert self.base_flu_frame_id != "", "base_flu_frame_id must be set"
 
@@ -179,6 +184,11 @@ class RomanMapNode(Node):
         # ros subscribers
         self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
                                  callback_group=self.obs_cb_group)
+
+        # keyframes share obs_cb's group: they only touch the submap builder, which obs_cb also updates
+        if self.reference_submap_by_keyframe:
+            self.create_subscription(geometry_msgs.TransformStamped, "keyframe", self.keyframe_cb, 100,
+                                     callback_group=self.obs_cb_group)
 
         if self.mapper.params.store_aggregated_pcds:
             self.depth_camera_info = None
@@ -276,6 +286,21 @@ class RomanMapNode(Node):
                 self.publish_segment(segment)
         self.timing_fifo.update(time.time() - start_t)
 
+    def keyframe_cb(self, msg: geometry_msgs.TransformStamped):
+        """
+        Records a keyframe (odom <- base_flu at its stamp) that submaps may be referenced to
+        """
+        if not self.up:
+            return
+        # wrong frames mean a misconfiguration: fail loudly instead of anchoring submaps to the wrong poses
+        if msg.header.frame_id != self.odom_frame_id or msg.child_frame_id != self.base_flu_frame_id:
+            raise ValueError(
+                f"Keyframe frames {msg.header.frame_id} <- {msg.child_frame_id} do not match "
+                f"odom_frame_id <- base_flu_frame_id ({self.odom_frame_id} <- {self.base_flu_frame_id})")
+        self.submap_builder.update_keyframe(
+            time_stamp_to_float(msg.header.stamp),
+            rnp.numpify(msg.transform).astype(np.float64))
+
     def depth_info_cb(self, msg: sensor_msgs.CameraInfo):
         self.depth_camera_info = msg
 
@@ -319,7 +344,11 @@ class RomanMapNode(Node):
             segment.set_center_ref('bottom_middle')
         segment_msg = segment_to_msg(self.robot_id, segment)
         self.segments_pub.publish(segment_msg)
-        submap = self.submap_builder.update_segment(msg_to_segment(segment_msg))
+        try:
+            submap = self.submap_builder.update_segment(msg_to_segment(segment_msg))
+        except NoKeyframeError as ex:
+            self.get_logger().warning(f"Dropping submap {self.submap_builder.next_submap_id}: {ex}")
+            return
         if submap is not None:
             if self.submap_params.submap_descriptor is not None and submap.descriptor is None:
                 self.get_logger().warning(f"Submap {submap.id} has no descriptor; check FastSAM descriptor settings.")

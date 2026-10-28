@@ -65,17 +65,19 @@ class SubmapDepthTests(unittest.TestCase):
                 self.assertAlmostEqual(points[0, 0], 1.0005, places=5)
 
     def test_depth_subscriptions_are_conditional_and_share_mapper_callback_group(self):
-        for enabled in [False, True]:
+        for enabled, keyframe in [(False, False), (True, False), (False, True), (True, True)]:
             node = SimpleNamespace(mapper=SimpleNamespace(params=SimpleNamespace(store_aggregated_pcds=enabled)),
                 create_publisher=Mock(), create_subscription=Mock(), create_service=Mock(),
-                obs_cb=Mock(), depth_cb=Mock(), depth_info_cb=Mock(), shutdown_cb=Mock(),
+                obs_cb=Mock(), depth_cb=Mock(), depth_info_cb=Mock(), keyframe_cb=Mock(), shutdown_cb=Mock(),
+                reference_submap_by_keyframe=keyframe,
                 visualize=False, viz_object_map=False, log_and_send_status=Mock())
             with patch('roman_ros2.roman_map_node.tf2_ros.Buffer'), \
                  patch('roman_ros2.roman_map_node.tf2_ros.TransformListener'):
                 RomanMapNode.setup_ros(node)
             calls = node.create_subscription.call_args_list
             self.assertEqual([call.args[1] for call in calls],
-                ['roman/observations'] + (['depth/camera_info', 'depth/image_raw'] if enabled else []))
+                ['roman/observations'] + (['keyframe'] if keyframe else []) +
+                (['depth/camera_info', 'depth/image_raw'] if enabled else []))
             for call in calls:
                 self.assertIs(call.kwargs['callback_group'], node.obs_cb_group)
 
