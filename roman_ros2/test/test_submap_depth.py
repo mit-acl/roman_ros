@@ -64,18 +64,19 @@ class SubmapDepthTests(unittest.TestCase):
                 self.assertEqual(points.shape, (1, 3))
                 self.assertAlmostEqual(points[0, 0], 1.0005, places=5)
 
-    def test_depth_subscriptions_are_conditional_and_share_mapper_callback_group(self):
-        for enabled in [False, True]:
+    def test_cloud_subscriptions_are_conditional_and_share_mapper_callback_group(self):
+        expected = {'depth': ['depth/camera_info', 'depth/image_raw'], 'pointcloud': ['pointcloud']}
+        for enabled, source in [(False, 'depth'), (True, 'depth'), (False, 'pointcloud'), (True, 'pointcloud')]:
             node = SimpleNamespace(mapper=SimpleNamespace(params=SimpleNamespace(store_aggregated_pcds=enabled)),
-                create_publisher=Mock(), create_subscription=Mock(), create_service=Mock(),
-                obs_cb=Mock(), depth_cb=Mock(), depth_info_cb=Mock(), shutdown_cb=Mock(),
+                pcd_source=source, create_publisher=Mock(), create_subscription=Mock(), create_service=Mock(),
+                obs_cb=Mock(), depth_cb=Mock(), depth_info_cb=Mock(), pointcloud_cb=Mock(), shutdown_cb=Mock(),
                 visualize=False, viz_object_map=False, log_and_send_status=Mock())
             with patch('roman_ros2.roman_map_node.tf2_ros.Buffer'), \
                  patch('roman_ros2.roman_map_node.tf2_ros.TransformListener'):
                 RomanMapNode.setup_ros(node)
             calls = node.create_subscription.call_args_list
             self.assertEqual([call.args[1] for call in calls],
-                ['roman/observations'] + (['depth/camera_info', 'depth/image_raw'] if enabled else []))
+                ['roman/observations'] + (expected[source] if enabled else []))
             for call in calls:
                 self.assertIs(call.kwargs['callback_group'], node.obs_cb_group)
 

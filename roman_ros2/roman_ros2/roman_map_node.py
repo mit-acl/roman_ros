@@ -13,6 +13,9 @@ from scipy.spatial.transform import Rotation as Rot
 # ROS imports
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.exceptions import ParameterUninitializedException
+from rclpy.time import Time
 import cv_bridge
 import ros2_numpy as rnp
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
@@ -45,6 +48,58 @@ from roman_ros2.utils import observation_from_msg, descriptor_from_array_msg, se
     msg_to_segment, submap_to_msg, time_stamp_to_float, TimingFifo
 from roman_ros2.submap_builder import SubmapBuilder
 
+POINT_TIME_FIELDS = {
+    'timestamp': ('<f8', False),    # Livox: absolute time, ns
+    't': ('<u4', True),             # Ouster: ns after the header stamp
+}
+
+
+def pointcloud2_to_xyz_time(msg: sensor_msgs.PointCloud2):
+    """(N, 3) float64 points and (N,) absolute per-point times in s (None if the cloud has none)."""
+    fields = {f.name: f for f in msg.fields}
+    if not all(k in fields for k in 'xyz'):
+        raise ValueError("point cloud has no x, y, z fields")
+    names, formats, offsets = ['x', 'y', 'z'], ['<f4'] * 3, [fields[k].offset for k in 'xyz']
+    time_field = next((k for k in POINT_TIME_FIELDS if k in fields), None)
+    if time_field is not None:
+        names.append('time')
+        formats.append(POINT_TIME_FIELDS[time_field][0])
+        offsets.append(fields[time_field].offset)
+    dtype = np.dtype({'names': names, 'formats': formats, 'offsets': offsets,
+                      'itemsize': msg.point_step})
+    if msg.is_bigendian:
+        dtype = dtype.newbyteorder('>')
+    data = np.frombuffer(bytes(msg.data), dtype=dtype, count=msg.width * msg.height)
+    points = np.column_stack([data['x'], data['y'], data['z']]).astype(np.float64)
+    if time_field is None:
+        return points, None
+    times = data['time'].astype(np.float64) * 1e-9
+    if POINT_TIME_FIELDS[time_field][1]:
+        times = times + time_stamp_to_float(msg.header.stamp)
+    return points, times
+
+
+def deskew_points(points, times, t_ref, sensor_pose_at, steps):
+    """Points expressed in the sensor frame at t_ref, each moved with the sensor pose at its own time.
+
+    The scan's time span is split into ``steps`` equal bins and every point in a bin uses the
+    pose at the bin's middle; ``sensor_pose_at(t)`` returns T_odom_sensor.
+    """
+    t0, t1 = times.min(), times.max()
+    if steps < 1 or t1 <= t0:
+        return points
+    T_ref_inv = np.linalg.inv(sensor_pose_at(t_ref))
+    bins = np.minimum(((times - t0) / (t1 - t0) * steps).astype(int), steps - 1)
+    out = np.empty_like(points)
+    for k in range(steps):
+        mask = bins == k
+        if not mask.any():
+            continue
+        T = T_ref_inv @ sensor_pose_at(t0 + (k + 0.5) / steps * (t1 - t0))
+        out[mask] = points[mask] @ T[:3, :3].T + T[:3, 3]
+    return out
+
+
 class RomanMapNode(Node):
 
     def __init__(self):
@@ -70,6 +125,12 @@ class RomanMapNode(Node):
                 ("use_multiple_cams", False),           # whether mapper will get FastSAM measurements from multiple cameras
                 ("timing_window", 10),                  # timing window used for report processing speed
                 ("depth_pcd_stride", 4),                # depth pixels sampled for cloud aggregation
+                ("pcd_source", "depth"),                # aggregated clouds from: depth (depth/image_raw)
+                                                        # or pointcloud (PointCloud2 on pointcloud, e.g. a lidar)
+                ("pointcloud_T_base_sensor", Parameter.Type.DOUBLE_ARRAY),  # optional row-major 4x4
+                                                        # base_flu -> sensor mount, used instead of TF
+                ("pointcloud_min_range", 0.0),          # m, drop closer points (e.g. the robot itself)
+                ("pointcloud_deskew_steps", 0),         # >0: deskew with per-point times, this many poses per scan
                 ("viz_num_objs", 20),                   # maximum number of objects to visualize
                 ("viz_pts_per_obj", 250),               # number of points to visualize per object
                 ("viz_min_viz_dt", 0.25),               # minimum time between visualizations
@@ -96,6 +157,20 @@ class RomanMapNode(Node):
         self.depth_pcd_stride = self.get_parameter("depth_pcd_stride").value
         if self.depth_pcd_stride < 1:
             raise ValueError("depth_pcd_stride must be positive")
+        self.pcd_source = self.get_parameter("pcd_source").value
+        if self.pcd_source not in ("depth", "pointcloud"):
+            raise ValueError("pcd_source must be depth or pointcloud")
+        try:
+            T_base_sensor = self.get_parameter("pointcloud_T_base_sensor").value
+        except ParameterUninitializedException:     # not set: use the cloud's frame from TF
+            T_base_sensor = None
+        self.T_base_pcd_sensor = None
+        if T_base_sensor is not None and len(T_base_sensor) > 0:
+            if len(T_base_sensor) != 16:
+                raise ValueError("pointcloud_T_base_sensor must have 16 values (row-major 4x4)")
+            self.T_base_pcd_sensor = np.asarray(T_base_sensor, dtype=np.float64).reshape(4, 4)
+        self.pointcloud_min_range = self.get_parameter("pointcloud_min_range").value
+        self.pointcloud_deskew_steps = self.get_parameter("pointcloud_deskew_steps").value
 
         config_path = self.get_parameter("config_path").value
         submap_config_path = self.get_parameter("submap_config_path").value
@@ -180,7 +255,12 @@ class RomanMapNode(Node):
         self.create_subscription(roman_msgs.ObservationArray, "roman/observations", self.obs_cb, 10,
                                  callback_group=self.obs_cb_group)
 
-        if self.mapper.params.store_aggregated_pcds:
+        if self.mapper.params.store_aggregated_pcds and self.pcd_source == "pointcloud":
+            self.last_pointcloud_time = -np.inf
+            self.pointcloud_sub = self.create_subscription(
+                sensor_msgs.PointCloud2, "pointcloud", self.pointcloud_cb,
+                qos_profile_sensor_data, callback_group=self.obs_cb_group)
+        elif self.mapper.params.store_aggregated_pcds:
             self.depth_camera_info = None
             self.depth_bridge = cv_bridge.CvBridge()
             self.last_depth_time = -np.inf
@@ -313,6 +393,46 @@ class RomanMapNode(Node):
         self.mapper.update_point_cloud(t, rnp.numpify(tf_msg.transform).astype(np.float64),
             depth, is_depth_img=True, depth_projection_metadata=metadata)
         self.last_depth_time = t
+
+    def pointcloud_sensor_pose(self, frame_id, t):
+        """T_odom_sensor at time t (float s), using pointcloud_T_base_sensor for the mount if set."""
+        stamp = Time(nanoseconds=int(round(t * 1e9))).to_msg()
+        timeout = rclpy.duration.Duration(seconds=0.5)
+        if self.T_base_pcd_sensor is None:
+            return rnp.numpify(self.tf_buffer.lookup_transform(
+                self.odom_frame_id, frame_id, stamp, timeout).transform).astype(np.float64)
+        T_odom_base = rnp.numpify(self.tf_buffer.lookup_transform(
+            self.odom_frame_id, self.base_flu_frame_id, stamp, timeout).transform).astype(np.float64)
+        return T_odom_base @ self.T_base_pcd_sensor
+
+    def pointcloud_cb(self, msg: sensor_msgs.PointCloud2):
+        """Feed a point cloud (e.g. a lidar scan) to the mapper's scan window."""
+        if not self.up:
+            return
+        t = time_stamp_to_float(msg.header.stamp)
+        if t <= self.last_pointcloud_time:
+            return
+        try:
+            points, times = pointcloud2_to_xyz_time(msg)
+        except ValueError as ex:
+            self.get_logger().warning(f"Unusable point cloud: {ex}", throttle_duration_sec=10.0)
+            return
+        keep = np.all(np.isfinite(points), axis=1)
+        if self.pointcloud_min_range > 0.0:
+            keep &= np.linalg.norm(points, axis=1) >= self.pointcloud_min_range
+        points = points[keep]
+        try:
+            T_odom_sensor = self.pointcloud_sensor_pose(msg.header.frame_id, t)
+            if self.pointcloud_deskew_steps > 0 and times is not None and len(points):
+                points = deskew_points(points, times[keep], t,
+                    lambda ti: self.pointcloud_sensor_pose(msg.header.frame_id, ti),
+                    self.pointcloud_deskew_steps)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as ex:
+            self.get_logger().warning(f"Point cloud TF lookup failed: {ex}", throttle_duration_sec=10.0)
+            return
+        self.mapper.update_point_cloud(t, T_odom_sensor, points)
+        self.last_pointcloud_time = t
 
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
