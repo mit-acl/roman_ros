@@ -16,6 +16,7 @@ import ros2_numpy as rnp
 from rclpy.executors import MultiThreadedExecutor
 import tf2_ros
 from rclpy.qos import QoSProfile
+from rcl_interfaces.msg import ParameterDescriptor
 import cv_bridge
 
 # ROS msgs
@@ -56,7 +57,10 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ("viz_robot_ids", [-1]),
+                # an empty list default needs dynamic typing to accept integer overrides
+                ("viz_robot_ids", [], ParameterDescriptor(dynamic_typing=True)),
+                ("viz_all_live_ids", True),
+                ("viz_all_prior_ids", True),
                 ("aligned_traj_viz", True),
                 ("lc_marker_viz", True),
                 ("output_dir", "~/.roman_ros2/loop_closures"),
@@ -86,12 +90,14 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         hex_color = self.get_parameter("lc_marker_color").value.lstrip('#')
         self.lc_marker_color = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
 
-        # parse viz_robot_ids: [-1] means show all
-        viz_robot_ids_param = self.get_parameter("viz_robot_ids").value
-        if viz_robot_ids_param == [-1]:
-            self.viz_robot_ids = None
-        else:
-            self.viz_robot_ids = set(viz_robot_ids_param)
+        # robots whose loop closures are visualized: viz_robot_ids plus, optionally, all
+        # live robots and all prior session maps
+        self.viz_robot_ids = set(self.get_parameter("viz_robot_ids").value or [])
+        if self.get_parameter("viz_all_live_ids").value:
+            self.viz_robot_ids |= set(self.live_ids)
+        if self.get_parameter("viz_all_prior_ids").value:
+            self.viz_robot_ids |= set(self.prior_session_ids)
+        self.get_logger().info(f"Visualizing loop closures for robot ids {sorted(self.viz_robot_ids)}")
 
         assert self.aligned_traj_viz, "Only aligned trajectory visualizer currently supported."
         self.get_logger().info(f"Saving loop closure visualizations to {str(self.output_dir )}")
@@ -149,8 +155,6 @@ class LCVizNode(ROMANLoopClosureNodeBaseClass):
         self.flu_ref_frames[robot_id] = submap_msg.header.frame_id
 
     def _should_viz_lc(self, robot1_id, robot2_id):
-        if self.viz_robot_ids is None:
-            return True
         lc_robots = {robot1_id, robot2_id}
         return lc_robots <= (self.viz_robot_ids | {self.ego_id}) and bool(lc_robots & self.viz_robot_ids)
 
