@@ -360,6 +360,8 @@ def lc_to_msg(robot_id1: int, robot_id2: int, submap1: Submap, submap2: Submap,
     lc_msg.robot2_associated_segment_ids = [submap2.segments[i].id for i in associations[:,1]]
 
     lc_msg.transform_robot1_robot2 = rnp.msgify(geometry_msgs.Pose, T_submap1_submap2)
+    lc_msg.robot1_submap_pose = rnp.msgify(geometry_msgs.Pose, submap1.pose_flu)
+    lc_msg.robot2_submap_pose = rnp.msgify(geometry_msgs.Pose, submap2.pose_flu)
     lc_msg.covariance = covariance.reshape(-1).tolist()
     
     return lc_msg

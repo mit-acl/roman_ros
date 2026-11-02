@@ -15,3 +15,8 @@ int32[] robot2_associated_segment_ids
 
 geometry_msgs/Pose transform_robot1_robot2
 float64[36] covariance # rotation first
+
+# Submap poses in each robot's odometry frame: odom1 <- submap1 (robot1's FLU frame at robot1_time)
+# and odom2 <- submap2 (robot2's FLU frame at robot2_time); transform_robot1_robot2 is submap1 <- submap2
+geometry_msgs/Pose robot1_submap_pose
+geometry_msgs/Pose robot2_submap_pose
