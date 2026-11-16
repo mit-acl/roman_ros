@@ -2,13 +2,13 @@
 
 import numpy as np
 from numpy.linalg import inv
-from dataclasses import dataclass
 import time
 import os
 
 # ROS imports
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile
 
@@ -26,28 +26,6 @@ from roman.map.map import Submap, ROMANMap, submaps_from_roman_map, SubmapParams
 # Local imports
 from roman_ros2.utils import lc_to_pose_graph_msg, lc_to_msg, msg_to_submap
 
-@dataclass
-class LoopClosureInfo:
-    robot_id1: int = None
-    robot_id2: int = None
-    submap_id1: int = None
-    submap_id2: int = None
-
-    @property
-    def initialized(self):
-        return self.robot_id1 is not None and \
-               self.robot_id2 is not None and \
-               self.submap_id1 is not None and \
-               self.submap_id2 is not None
-
-    def __str__(self):
-        if not self.initialized:
-            return "No loop closure found yet." 
-        else:
-            return f"Last loop closure between robot_ids: " + \
-                f"({self.robot_id1}, {self.robot_id2})" + \
-                f" and submaps: ({self.submap_id1}, {self.submap_id2})."
-            
 class ROMANLoopClosureNodeBaseClass(Node):
 
     def __init__(self, node_name):
@@ -60,6 +38,7 @@ class ROMANLoopClosureNodeBaseClass(Node):
                 ("config_path", ""),
                 ("lc_required_associations", 6), # minimum number of associations to accept a loop closure
                 ("nickname", "roman_lc"), # node nickname for status messages
+                ("status_rate_hz", 1.0), # rate of the loop closure summary status messages
                 ("lc_std_dev_rotation_deg", 1.0), # standard deviation for rotation in degrees
                 ("lc_std_dev_translation_m", 0.5), # standard deviation for translation in meters
                 ('submap_knn', -1), # number of nearest neighbor submaps to consider for registration, -1 for all
@@ -81,6 +60,7 @@ class ROMANLoopClosureNodeBaseClass(Node):
         self.submap_knn = self.get_parameter("submap_knn").value
         self.k_latest_submaps = self.get_parameter("k_latest_submaps").value
         self.nickname = self.get_parameter("nickname").value
+        self.status_rate_hz = self.get_parameter("status_rate_hz").value
         self.ego_id = self.get_parameter("ego_id").value
         self.ego_name = self.get_parameter("ego_name").value
         self.team_ids = self.get_parameter("team_ids").value
@@ -140,9 +120,11 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         # internal variables
         self.covariance = np.diag([np.deg2rad(self.lc_std_dev_rotation_deg)**2]*3 + 
                                   [self.lc_std_dev_translation_m**2]*3)
-        # time taken, id1, id2, submap_id1, submap_id2
-        self.last_lc_info = LoopClosureInfo()
-        self.last_lc_time = None
+        # loop closure counts and the duration of the latest detection, for the status timer
+        self.num_inter_robot_lcs = 0
+        self.num_intra_robot_lcs = 0
+        self.last_detection_time_s = None
+        self.last_lc_stamp = None  # ROS time the latest loop closure was found
         self.new_lc_flag = False
          
         self.submaps = {live_id: [] for live_id in self.live_ids}
@@ -170,6 +152,10 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         
         self.setup_ros()
         self.log_and_send_status("ROMAN Loop Closure Node setup complete.", status=NodeInfoMsg.STARTUP)
+
+        # own callback group so the status keeps publishing while a detection is running
+        self.status_timer = self.create_timer(1.0 / self.status_rate_hz, self.status_timer_cb,
+                                              callback_group=MutuallyExclusiveCallbackGroup())
         
     def setup_ros(self):
         
@@ -190,11 +176,6 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         """
         Receive mapper-built submaps from ego or a teammate and trigger loop closure.
         """
-        detection_time_info_str = f"Last detection time: {self.last_lc_time} ms" \
-            if self.last_lc_time is not None else "No loop closure detection run yet."
-        self.send_status_msg(detection_time_info_str + " " + str(self.last_lc_info),
-                             status=NodeInfoMsg.NOMINAL)
-
         submap = msg_to_submap(submap_msg)
         if submap_msg.robot_id != robot_id:
             self.get_logger().warning(f"Submap message on robot {robot_id}'s topic says robot id "
@@ -222,11 +203,12 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
 
         end_t = time.time()
 
-        self.last_lc_time = np.round((end_t - start_t) * 1e3, 1)
+        self.last_detection_time_s = end_t - start_t
+        detection_time_ms = np.round(self.last_detection_time_s * 1e3, 1)
         if self.new_lc_flag:
-            self.log_and_send_status(f"Loop closure found for robot {robot_id}, submap {submap.id}. Detection time: {self.last_lc_time} ms")
+            self.get_logger().info(f"Loop closure found for robot {robot_id}, submap {submap.id}. Detection time: {detection_time_ms} ms")
         else:
-            self.log_and_send_status(f"No loop closures found for robot {robot_id}, submap {submap.id}. Detection time: {self.last_lc_time} ms")
+            self.get_logger().info(f"No loop closures found for robot {robot_id}, submap {submap.id}. Detection time: {detection_time_ms} ms")
         self.new_lc_flag = False
             
     def run_submap_registration(self, submap: Submap, robot_id: int, other_id: int):
@@ -255,8 +237,8 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                              if Submap.similarity(submap, submap2) > 
                              self.submap_align_params.submap_descriptor_thresh]
 
-        self.log_and_send_status(f"Attempting to register {len(other_submaps)} " + 
-                                 f"submaps between robot ids: ({robot_id}, {other_id})")
+        self.get_logger().info(f"Attempting to register {len(other_submaps)} " +
+                               f"submaps between robot ids: ({robot_id}, {other_id})")
 
         icp_target = None
         for submap2 in other_submaps:
@@ -300,7 +282,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                      f"{np.degrees(np.arctan2(dT[1, 0], dT[0, 0])):+.2f} deg yaw") +
                     f" ({1000 * (time.time() - t0):.0f} ms)")
 
-            self.log_and_send_status(f"Found {len(associations)} associations between robot_ids: " + 
+            self.get_logger().info(f"Found {len(associations)} associations between robot_ids: " +
                 f"({robot_id}, {other_id}) and submaps: ({submap.id}, {submap2.id}).")
             
             T_odom1_submapgrav1 = submap.pose_gravity_aligned
@@ -314,14 +296,32 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                                           self.covariance, self.get_clock().now().to_msg())
             self.pgt_lc_pub.publish(pg_msg)
             
+            similarity = Submap.similarity(submap, submap2) \
+                if self.submap_align_params.submap_descriptor is not None else float('nan')
             lc_msg = lc_to_msg(robot_id, other_id, submap, submap2, associations, 
-                               T_submap1_submap2, self.covariance, self.get_clock().now().to_msg())
+                               T_submap1_submap2, self.covariance, self.get_clock().now().to_msg(),
+                               submap_similarity=similarity)
             self.loop_closure_pub.publish(lc_msg)
 
-            # store info about last loop closure
-            self.last_lc_info = LoopClosureInfo(robot_id1=robot_id, robot_id2=other_id,
-                                                submap_id1=submap.id, submap_id2=submap2.id)
+            if robot_id == other_id:
+                self.num_intra_robot_lcs += 1
+            else:
+                self.num_inter_robot_lcs += 1
+            self.last_lc_stamp = self.get_clock().now()
             self.new_lc_flag = True
+
+    def status_timer_cb(self):
+        """
+        Send a summary of the loop closures found so far to the status topic.
+        """
+        detection_time = "N/A" if self.last_detection_time_s is None \
+            else f"{self.last_detection_time_s:.2f} s"
+        time_since_lc = "N/A" if self.last_lc_stamp is None \
+            else f"{(self.get_clock().now() - self.last_lc_stamp).nanoseconds * 1e-9:.1f} s"
+        self.send_status_msg(f"Inter-robot lcs: {self.num_inter_robot_lcs}, "
+                             f"Intra-robot lcs: {self.num_intra_robot_lcs}, "
+                             f"last detection time: {detection_time}, "
+                             f"time since last lc: {time_since_lc}")
 
     def log_and_send_status(self, note, status=NodeInfoMsg.NOMINAL):
         """

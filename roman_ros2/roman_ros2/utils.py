@@ -342,7 +342,8 @@ def lc_to_pose_graph_msg(robot_id1: int, robot_id2: int, submap1: Submap, submap
     return pg
     
 def lc_to_msg(robot_id1: int, robot_id2: int, submap1: Submap, submap2: Submap, 
-        associations: np.ndarray, T_submap1_submap2: np.ndarray, covariance: np.ndarray, stamp):
+        associations: np.ndarray, T_submap1_submap2: np.ndarray, covariance: np.ndarray, stamp,
+        submap_similarity: float = float('nan')):
     lc_msg = roman_msgs.LoopClosure()
     lc_msg.header.stamp = stamp
     
@@ -356,6 +357,7 @@ def lc_to_msg(robot_id1: int, robot_id2: int, submap1: Submap, submap2: Submap,
     lc_msg.robot2_time = float_to_ros_time(submap2.time)
     
     lc_msg.num_associations = len(associations)
+    lc_msg.submap_similarity = float(submap_similarity)
     lc_msg.robot1_associated_segment_ids = [submap1.segments[i].id for i in associations[:,0]]
     lc_msg.robot2_associated_segment_ids = [submap2.segments[i].id for i in associations[:,1]]
 

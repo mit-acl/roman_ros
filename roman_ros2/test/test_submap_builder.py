@@ -250,13 +250,13 @@ class SubmapCallbackTests(unittest.TestCase):
 
     def test_received_submap_triggers_registration_and_is_stored(self):
         from roman.map.map import Submap
-        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode, LoopClosureInfo
+        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
         from roman_ros2.utils import submap_to_msg
 
-        node = SimpleNamespace(last_lc_time=None, last_lc_info=LoopClosureInfo(),
-                               send_status_msg=Mock(), submap_align_params=SimpleNamespace(submap_descriptor=None),
+        node = SimpleNamespace(last_detection_time_s=None, get_logger=Mock(),
+                               submap_align_params=SimpleNamespace(submap_descriptor=None),
                                ego_id=7, all_ids=[7, 8, 9], submaps={7: [], 8: [], 9: []},
-                               run_submap_registration=Mock(), log_and_send_status=Mock(), new_lc_flag=False)
+                               run_submap_registration=Mock(), new_lc_flag=False)
         node.handle_new_submap = lambda submap, robot_id: ROMANLoopClosureNode.handle_new_submap(
             node, submap, robot_id)
         for robot_id, expected_peers in ((7, [7, 8, 9]), (8, [7])):
@@ -287,12 +287,14 @@ class SubmapCallbackTests(unittest.TestCase):
                                submap_knn=None, submap_align_params=SimpleNamespace(
                                    submap_descriptor=None, icp_on_submap_pcds=False,
                                    force_rm_lc_roll_pitch=False), roman_reg=registration,
-                               lc_required_associations=4, log_and_send_status=Mock(),
+                               lc_required_associations=4, get_logger=Mock(),
+                               num_inter_robot_lcs=0, num_intra_robot_lcs=0,
                                covariance=np.eye(6), get_clock=Mock(), pgt_lc_pub=Mock(),
                                loop_closure_pub=Mock())
         with patch('roman_ros2.roman_loop_closure_node.lc_to_pose_graph_msg') as to_pose_graph, \
                 patch('roman_ros2.roman_loop_closure_node.lc_to_msg'):
             ROMANLoopClosureNode.run_submap_registration(node, submaps[0], 0, 1)
+        self.assertEqual((node.num_inter_robot_lcs, node.num_intra_robot_lcs), (1, 0))
         expected = (np.linalg.inv(poses[0]) @ transform_rm_roll_pitch(poses[0]) @
                     registration_transform @ np.linalg.inv(transform_rm_roll_pitch(poses[1])) @ poses[1])
         np.testing.assert_allclose(to_pose_graph.call_args.args[4], expected)
