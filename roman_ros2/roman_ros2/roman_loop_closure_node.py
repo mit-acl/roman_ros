@@ -296,8 +296,11 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
                                           self.covariance, self.get_clock().now().to_msg())
             self.pgt_lc_pub.publish(pg_msg)
             
+            similarity = Submap.similarity(submap, submap2) \
+                if self.submap_align_params.submap_descriptor is not None else float('nan')
             lc_msg = lc_to_msg(robot_id, other_id, submap, submap2, associations, 
-                               T_submap1_submap2, self.covariance, self.get_clock().now().to_msg())
+                               T_submap1_submap2, self.covariance, self.get_clock().now().to_msg(),
+                               submap_similarity=similarity)
             self.loop_closure_pub.publish(lc_msg)
 
             if robot_id == other_id:
