@@ -114,7 +114,19 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
     def __init__(self):
         
         super().__init__('roman_loop_closure_node')
-        self.status_pub = self.create_publisher(NodeInfoMsg, "roman/roman_lc/status", 
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                # publish only the loop closure with the most associations (ties: submap
+                # similarity) for each new submap, across all robots it was registered against
+                ("best_lc_only", False),
+                # do not register a robot's submaps against its own earlier submaps
+                ("no_self_lcs", False),
+            ]
+        )
+        self.best_lc_only = self.get_parameter("best_lc_only").value
+        self.no_self_lcs = self.get_parameter("no_self_lcs").value
+        self.status_pub = self.create_publisher(NodeInfoMsg, "roman/roman_lc/status",
                                                 qos_profile=QoSProfile(depth=10))
 
         # internal variables
@@ -197,12 +209,23 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         start_t = time.time()
 
         # run submap registration
+        candidates = []
         if robot_id == self.ego_id:
             for r2 in self.all_ids:
-                self.run_submap_registration(submap, robot_id, r2)
+                if self.no_self_lcs and r2 == robot_id:
+                    continue
+                candidates += self.run_submap_registration(submap, robot_id, r2)
         else:
             # run registration with ego robot
-            self.run_submap_registration(submap, robot_id, self.ego_id)
+            candidates += self.run_submap_registration(submap, robot_id, self.ego_id)
+
+        if self.best_lc_only and len(candidates) > 1:
+            candidates = [max(candidates, key=lambda c: (len(c[2]), self.lc_similarity(submap, c[1])))]
+
+        icp_target = None
+        for other_id, submap2, associations, T_submapgrav1_submapgrav2 in candidates:
+            icp_target = self.publish_loop_closure(submap, robot_id, other_id, submap2, associations,
+                                                   T_submapgrav1_submapgrav2, icp_target)
 
         end_t = time.time()
 
@@ -214,7 +237,18 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
             self.get_logger().info(f"No loop closures found for robot {robot_id}, submap {submap.id}. Detection time: {detection_time_ms} ms")
         self.new_lc_flag = False
             
+    def lc_similarity(self, submap: Submap, submap2: Submap) -> float:
+        return Submap.similarity(submap, submap2) \
+            if self.submap_align_params.submap_descriptor is not None else float('nan')
+
     def run_submap_registration(self, submap: Submap, robot_id: int, other_id: int):
+        """
+        Register a submap against another robot's submaps.
+
+        Returns:
+            list of (other_id, submap2, associations, T_submapgrav1_submapgrav2) for each
+            pair with enough associations to become a loop closure
+        """
         submap2: Submap
 
         other_submaps = self.submaps[other_id]
@@ -243,7 +277,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         self.get_logger().info(f"Attempting to register {len(other_submaps)} " +
                                f"submaps between robot ids: ({robot_id}, {other_id})")
 
-        icp_target = None
+        candidates = []
         for submap2 in other_submaps:
 
             # run registration
@@ -266,52 +300,63 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
             if len(associations) < self.lc_required_associations:
                 continue
 
-            # ICP only for pairs that will become loop closures; the target (this submap's
-            # cloud with normals) is prepared once and reused for every candidate
-            if self.submap_align_params.icp_on_submap_pcds:
-                if icp_target is None:
-                    icp_target = self.roman_reg.prepare_icp_cloud(submap.point_cloud)
-                t0 = time.time()
-                T_object = T_submapgrav1_submapgrav2
-                T_submapgrav1_submapgrav2 = self.roman_reg.refine_with_icp(
-                    T_object, submap.point_cloud, submap2.point_cloud,
-                    xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch, target_pcd=icp_target)
-                dT = T_submapgrav1_submapgrav2 @ inv(T_object)
-                kept = np.allclose(dT, np.eye(4))
-                self.get_logger().info(
-                    f"ICP ({robot_id}, {other_id}) submaps ({submap.id}, {submap2.id}): " +
-                    ("kept object alignment" if kept else
-                     f"refined by {np.linalg.norm(dT[:3, 3]):.3f} m, "
-                     f"{np.degrees(np.arctan2(dT[1, 0], dT[0, 0])):+.2f} deg yaw") +
-                    f" ({1000 * (time.time() - t0):.0f} ms)")
+            candidates.append((other_id, submap2, associations, T_submapgrav1_submapgrav2))
 
-            self.get_logger().info(f"Found {len(associations)} associations between robot_ids: " +
-                f"({robot_id}, {other_id}) and submaps: ({submap.id}, {submap2.id}).")
-            
-            T_odom1_submapgrav1 = submap.pose_gravity_aligned
-            T_odom2_submapgrav2 = submap2.pose_gravity_aligned
-            T_odom1_submap1 = submap.pose_flu
-            T_odom2_submap2 = submap2.pose_flu
-            T_submap1_submap2 = inv(T_odom1_submap1) @ T_odom1_submapgrav1 @ \
-                T_submapgrav1_submapgrav2 @ inv(T_odom2_submapgrav2) @ T_odom2_submap2
-                
-            pg_msg = lc_to_pose_graph_msg(robot_id, other_id, submap, submap2, T_submap1_submap2,
-                                          self.covariance, self.get_clock().now().to_msg())
-            self.pgt_lc_pub.publish(pg_msg)
-            
-            similarity = Submap.similarity(submap, submap2) \
-                if self.submap_align_params.submap_descriptor is not None else float('nan')
-            lc_msg = lc_to_msg(robot_id, other_id, submap, submap2, associations, 
-                               T_submap1_submap2, self.covariance, self.get_clock().now().to_msg(),
-                               submap_similarity=similarity)
-            self.loop_closure_pub.publish(lc_msg)
+        return candidates
 
-            if robot_id == other_id:
-                self.num_intra_robot_lcs += 1
-            else:
-                self.num_inter_robot_lcs += 1
-            self.last_lc_stamp = self.get_clock().now()
-            self.new_lc_flag = True
+    def publish_loop_closure(self, submap: Submap, robot_id: int, other_id: int, submap2: Submap,
+                             associations: np.ndarray, T_submapgrav1_submapgrav2: np.ndarray,
+                             icp_target=None):
+        """
+        Refine (optionally) and publish one loop closure. Returns the ICP target cloud so it
+        can be reused for the next loop closure of the same submap.
+        """
+        # ICP only for pairs that will become loop closures; the target (this submap's
+        # cloud with normals) is prepared once and reused for every candidate
+        if self.submap_align_params.icp_on_submap_pcds:
+            if icp_target is None:
+                icp_target = self.roman_reg.prepare_icp_cloud(submap.point_cloud)
+            t0 = time.time()
+            T_object = T_submapgrav1_submapgrav2
+            T_submapgrav1_submapgrav2 = self.roman_reg.refine_with_icp(
+                T_object, submap.point_cloud, submap2.point_cloud,
+                xyz_yaw_only=self.submap_align_params.force_rm_lc_roll_pitch, target_pcd=icp_target)
+            dT = T_submapgrav1_submapgrav2 @ inv(T_object)
+            kept = np.allclose(dT, np.eye(4))
+            self.get_logger().info(
+                f"ICP ({robot_id}, {other_id}) submaps ({submap.id}, {submap2.id}): " +
+                ("kept object alignment" if kept else
+                 f"refined by {np.linalg.norm(dT[:3, 3]):.3f} m, "
+                 f"{np.degrees(np.arctan2(dT[1, 0], dT[0, 0])):+.2f} deg yaw") +
+                f" ({1000 * (time.time() - t0):.0f} ms)")
+
+        self.get_logger().info(f"Found {len(associations)} associations between robot_ids: " +
+            f"({robot_id}, {other_id}) and submaps: ({submap.id}, {submap2.id}).")
+        
+        T_odom1_submapgrav1 = submap.pose_gravity_aligned
+        T_odom2_submapgrav2 = submap2.pose_gravity_aligned
+        T_odom1_submap1 = submap.pose_flu
+        T_odom2_submap2 = submap2.pose_flu
+        T_submap1_submap2 = inv(T_odom1_submap1) @ T_odom1_submapgrav1 @ \
+            T_submapgrav1_submapgrav2 @ inv(T_odom2_submapgrav2) @ T_odom2_submap2
+            
+        pg_msg = lc_to_pose_graph_msg(robot_id, other_id, submap, submap2, T_submap1_submap2,
+                                      self.covariance, self.get_clock().now().to_msg())
+        self.pgt_lc_pub.publish(pg_msg)
+        
+        similarity = self.lc_similarity(submap, submap2)
+        lc_msg = lc_to_msg(robot_id, other_id, submap, submap2, associations, 
+                           T_submap1_submap2, self.covariance, self.get_clock().now().to_msg(),
+                           submap_similarity=similarity)
+        self.loop_closure_pub.publish(lc_msg)
+
+        if robot_id == other_id:
+            self.num_intra_robot_lcs += 1
+        else:
+            self.num_inter_robot_lcs += 1
+        self.last_lc_stamp = self.get_clock().now()
+        self.new_lc_flag = True
+        return icp_target
 
     def status_timer_cb(self):
         """
