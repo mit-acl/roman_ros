@@ -123,6 +123,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         # loop closure counts and the duration of the latest detection, for the status timer
         self.num_inter_robot_lcs = 0
         self.num_intra_robot_lcs = 0
+        self.num_ego_submaps = 0  # submaps received from the ego robot
         self.last_detection_time_s = None
         self.last_lc_stamp = None  # ROS time the latest loop closure was found
         self.new_lc_flag = False
@@ -177,6 +178,8 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         Receive mapper-built submaps from ego or a teammate and trigger loop closure.
         """
         submap = msg_to_submap(submap_msg)
+        if robot_id == self.ego_id:
+            self.num_ego_submaps += 1
         if submap_msg.robot_id != robot_id:
             self.get_logger().warning(f"Submap message on robot {robot_id}'s topic says robot id "
                                       f"{submap_msg.robot_id}; using {robot_id}.")
@@ -320,6 +323,7 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
             else f"{(self.get_clock().now() - self.last_lc_stamp).nanoseconds * 1e-9:.1f} s"
         self.send_status_msg(f"Inter-robot lcs: {self.num_inter_robot_lcs}, "
                              f"Intra-robot lcs: {self.num_intra_robot_lcs}, "
+                             f"sms processed: {self.num_ego_submaps}, "
                              f"last detection time: {detection_time}, "
                              f"time since last lc: {time_since_lc}")
 
