@@ -32,7 +32,8 @@ setup(
             'roman_map_node.py = roman_ros2.roman_map_node:main',
             'roman_align_node.py = roman_ros2.roman_align_node:main',
             'roman_loop_closure_node.py = roman_ros2.roman_loop_closure_node:main',
-            'lc_viz_node.py = roman_ros2.lc_viz_node:main'
+            'lc_viz_node.py = roman_ros2.lc_viz_node:main',
+            'meridian_rpgo_relocalization_node.py = roman_ros2.meridian_rpgo_relocalization_node:main'
         ],
     },
 )
