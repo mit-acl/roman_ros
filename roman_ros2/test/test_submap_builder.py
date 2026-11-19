@@ -238,12 +238,13 @@ class SubmapCallbackTests(unittest.TestCase):
         import roman_msgs.msg as roman_msgs
         from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
 
-        node = SimpleNamespace(live_names=['ego', 'team'], live_ids=[7, 8],
+        node = SimpleNamespace(live_names=['ego', 'team'], live_ids=[7, 8], lc_callback_group='group',
                                create_publisher=Mock(), create_subscription=Mock(), submap_cb=Mock())
         ROMANLoopClosureNode.setup_ros(node)
         calls = node.create_subscription.call_args_list
         self.assertEqual([call.args[1] for call in calls], ['/ego/roman/submap', '/team/roman/submap'])
         self.assertTrue(all(call.args[0] is roman_msgs.Submap for call in calls))
+        self.assertTrue(all(call.kwargs['callback_group'] == 'group' for call in calls))
         for call, robot_id in zip(calls, node.live_ids):
             call.args[2]('message')
             node.submap_cb.assert_called_with('message', robot_id)
@@ -256,9 +257,12 @@ class SubmapCallbackTests(unittest.TestCase):
         node = SimpleNamespace(last_detection_time_s=None, get_logger=Mock(),
                                submap_align_params=SimpleNamespace(submap_descriptor=None),
                                ego_id=7, all_ids=[7, 8, 9], submaps={7: [], 8: [], 9: []},
-                               run_submap_registration=Mock(), new_lc_flag=False)
+                               run_submap_registration=Mock(return_value=[]), new_lc_flag=False,
+                               num_ego_submaps=0,
+                               best_lc_only=False, no_self_lcs=False, **loaded_queue_state())
         node.handle_new_submap = lambda submap, robot_id: ROMANLoopClosureNode.handle_new_submap(
             node, submap, robot_id)
+        node.drain_submap_queue = lambda: ROMANLoopClosureNode.drain_submap_queue(node)
         for robot_id, expected_peers in ((7, [7, 8, 9]), (8, [7])):
             node.run_submap_registration.reset_mock()
             msg = submap_to_msg(robot_id, Submap(0, 1., [segment(0)], np.eye(4)), 'odom', 'base_link')
@@ -266,6 +270,80 @@ class SubmapCallbackTests(unittest.TestCase):
             self.assertEqual(len(node.submaps[robot_id]), 1)
             self.assertEqual([call.args[2] for call in node.run_submap_registration.call_args_list],
                              expected_peers)
+
+    def queue_node(self):
+        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
+
+        node = SimpleNamespace(get_logger=Mock(), ego_id=0, num_ego_submaps=0, handled=[],
+                               submap_align_params=SimpleNamespace(submap_descriptor=None),
+                               **loaded_queue_state(loaded=False))
+        node.handle_new_submap = lambda submap, robot_id: node.handled.append((submap.id, robot_id))
+        node.drain_submap_queue = lambda: ROMANLoopClosureNode.drain_submap_queue(node)
+        return node
+
+    def submap_msg(self, robot_id, submap_id):
+        from roman.map.map import Submap
+        from roman_ros2.utils import submap_to_msg
+        return submap_to_msg(robot_id, Submap(submap_id, 1., [segment(0)], np.eye(4)), 'odom', 'base_link')
+
+    def test_submaps_queue_while_prior_maps_load_and_keep_order(self):
+        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
+
+        node = self.queue_node()
+        for robot_id, submap_id in ((0, 0), (1, 0), (0, 1)):
+            ROMANLoopClosureNode.submap_cb(node, self.submap_msg(robot_id, submap_id), robot_id)
+        self.assertEqual(node.handled, [])
+        self.assertEqual(len(node.submap_queue), 3)
+        node.prior_maps_loaded = True
+        # a submap arriving before the drain timer fires goes after the queued ones
+        ROMANLoopClosureNode.submap_cb(node, self.submap_msg(0, 2), 0)
+        self.assertEqual(node.handled, [(0, 0), (0, 1), (1, 0), (2, 0)])
+        self.assertEqual(len(node.submap_queue), 0)
+        self.assertEqual(node.num_ego_submaps, 3)
+
+    def test_prior_map_loading_then_drains_queue_from_executor(self):
+        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
+
+        node = self.queue_node()
+        node.prior_session_ids, node.prior_session_maps = [3, 4], ['3.pkl', '4.pkl']
+        node.submap_params, node.submaps = None, {0: []}
+        node.log_and_send_status, node.create_timer = Mock(), Mock()
+        node.lc_callback_group, node.prior_load_error = 'group', None
+        node.drain_timer_cb = lambda: ROMANLoopClosureNode.drain_timer_cb(node)
+        ROMANLoopClosureNode.submap_cb(node, self.submap_msg(0, 0), 0)
+        with patch('roman_ros2.roman_loop_closure_node.ROMANMap') as roman_map, \
+                patch('roman_ros2.roman_loop_closure_node.submaps_from_roman_map',
+                      side_effect=lambda m, p: [m]):
+            roman_map.from_pickle.side_effect = lambda path: path
+            ROMANLoopClosureNode.load_prior_maps(node)
+        self.assertEqual(node.submaps, {0: [], 3: ['3.pkl'], 4: ['4.pkl']})
+        self.assertTrue(node.prior_maps_loaded)
+        self.assertEqual(node.handled, [])  # draining happens in the executor, not this thread
+        node.create_timer.assert_called_once()
+        self.assertEqual(node.create_timer.call_args.kwargs['callback_group'], 'group')
+        node.drain_timer = node.create_timer.return_value
+        ROMANLoopClosureNode.drain_timer_cb(node)
+        node.drain_timer.cancel.assert_called_once()
+        self.assertEqual(node.handled, [(0, 0)])
+
+    def test_prior_map_load_failure_keeps_queueing_and_reports_error(self):
+        from roman_ros2.roman_loop_closure_node import ROMANLoopClosureNode
+
+        node = self.queue_node()
+        node.prior_session_ids, node.prior_session_maps = [3], ['bad.pkl']
+        node.submap_params, node.submaps = None, {0: []}
+        node.log_and_send_status, node.create_timer = Mock(), Mock()
+        node.prior_load_error, node.send_status_msg = None, Mock()
+        with patch('roman_ros2.roman_loop_closure_node.ROMANMap') as roman_map:
+            roman_map.from_pickle.side_effect = OSError('nope')
+            ROMANLoopClosureNode.load_prior_maps(node)
+        self.assertFalse(node.prior_maps_loaded)
+        node.create_timer.assert_not_called()
+        ROMANLoopClosureNode.submap_cb(node, self.submap_msg(0, 0), 0)
+        self.assertEqual((node.handled, len(node.submap_queue)), ([], 1))
+        ROMANLoopClosureNode.status_timer_cb(node)
+        self.assertIn('bad.pkl', node.send_status_msg.call_args.args[0])
+        self.assertEqual(node.send_status_msg.call_args.kwargs['status'], 3)
 
     def test_registration_keeps_flu_poses_when_converting_gravity_frame_result(self):
         from roman.map.map import Submap
@@ -300,6 +378,12 @@ class SubmapCallbackTests(unittest.TestCase):
         np.testing.assert_allclose(to_pose_graph.call_args.args[4], expected)
         for submap, pose in zip(submaps, poses):
             np.testing.assert_equal(submap.pose_flu, pose)
+
+
+def loaded_queue_state(loaded=True):
+    import threading
+    from collections import deque
+    return dict(prior_maps_loaded=loaded, submap_queue=deque(), queue_lock=threading.Lock())
 
 
 if __name__ == '__main__':

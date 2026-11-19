@@ -4,6 +4,8 @@ import numpy as np
 from numpy.linalg import inv
 import time
 import os
+import threading
+from collections import deque
 
 # ROS imports
 import rclpy
@@ -142,6 +144,14 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
          
         self.submaps = {live_id: [] for live_id in self.live_ids}
 
+        # Prior maps load in a background thread after ROS setup so that live submaps arriving
+        # meanwhile are not dropped: they wait in this queue and are processed, in order, once
+        # loading finishes.
+        self.prior_maps_loaded = False
+        self.prior_load_error = None
+        self.submap_queue = deque()
+        self.queue_lock = threading.Lock()
+
         if self.config_path == "":
             self.submap_align_params = SubmapAlignParams()
         else:
@@ -151,25 +161,68 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         
         self.roman_reg = self.submap_align_params.get_object_registration()
 
-        # load prior session maps
-        self.log_and_send_status("Loading prior maps.", status=NodeInfoMsg.STARTUP)
-        for prior_id, map_path in zip(self.prior_session_ids, self.prior_session_maps):
-            prior_map = ROMANMap.from_pickle(map_path)
-            submaps = submaps_from_roman_map(prior_map, self.submap_params)
-            self.submaps[prior_id] = submaps
-            self.log_and_send_status(f"Loaded {len(submaps)} submaps for robot {prior_id} from {map_path}.", 
-                                     status=NodeInfoMsg.STARTUP)
-        
         # Check params
         assert self.submap_knn is None or self.submap_align_params.submap_descriptor is not None
-        
+
+        # submap callbacks and the queue drain share this group so submaps are handled one at a time
+        self.lc_callback_group = MutuallyExclusiveCallbackGroup()
         self.setup_ros()
-        self.log_and_send_status("ROMAN Loop Closure Node setup complete.", status=NodeInfoMsg.STARTUP)
+        self.log_and_send_status("ROMAN Loop Closure Node ROS setup complete.", status=NodeInfoMsg.STARTUP)
 
         # own callback group so the status keeps publishing while a detection is running
         self.status_timer = self.create_timer(1.0 / self.status_rate_hz, self.status_timer_cb,
                                               callback_group=MutuallyExclusiveCallbackGroup())
-        
+
+        # load prior session maps last, without blocking ROS
+        self.drain_timer = None
+        self.prior_load_thread = threading.Thread(target=self.load_prior_maps, daemon=True)
+        self.prior_load_thread.start()
+
+    def load_prior_maps(self):
+        """
+        Load the prior session maps (background thread), then hand any submaps queued meanwhile to
+        the loop closure callback group.
+        """
+        self.log_and_send_status(f"Loading {len(self.prior_session_maps)} prior maps.",
+                                 status=NodeInfoMsg.STARTUP)
+        start_t = time.time()
+        for prior_id, map_path in zip(self.prior_session_ids, self.prior_session_maps):
+            try:
+                prior_map = ROMANMap.from_pickle(map_path)
+                submaps = submaps_from_roman_map(prior_map, self.submap_params)
+            except Exception as e:
+                # submaps stay queued; the status timer keeps reporting this error
+                self.prior_load_error = f"Failed to load prior map {map_path}: {e!r}"
+                self.get_logger().error(self.prior_load_error)
+                return
+            self.submaps[prior_id] = submaps
+            self.log_and_send_status(f"Loaded {len(submaps)} submaps for robot {prior_id} from {map_path}.",
+                                     status=NodeInfoMsg.STARTUP)
+        with self.queue_lock:
+            self.prior_maps_loaded = True
+            num_queued = len(self.submap_queue)
+        self.log_and_send_status(f"Prior maps loaded in {time.time() - start_t:.1f} s; processing "
+                                 f"{num_queued} queued submaps.", status=NodeInfoMsg.STARTUP)
+        if num_queued > 0:
+            # drain from the executor so queued submaps never run concurrently with submap_cb
+            self.drain_timer = self.create_timer(0.0, self.drain_timer_cb,
+                                                 callback_group=self.lc_callback_group)
+
+    def drain_timer_cb(self):
+        self.drain_timer.cancel()
+        self.drain_submap_queue()
+
+    def drain_submap_queue(self):
+        """
+        Process the submaps queued while prior maps were loading, oldest first.
+        """
+        while True:
+            with self.queue_lock:
+                if not self.submap_queue:
+                    return
+                submap, robot_id = self.submap_queue.popleft()
+            self.handle_new_submap(submap, robot_id)
+
     def setup_ros(self):
         
         # ros publishers
@@ -181,7 +234,8 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         # Each live robot's mapper publishes its own submaps, including ego.
         self.submap_subs = [
             self.create_subscription(roman_msgs.Submap, f"/{robot_name}/roman/submap",
-                                     lambda msg, rid=robot_id: self.submap_cb(msg, rid), 20)
+                                     lambda msg, rid=robot_id: self.submap_cb(msg, rid), 20,
+                                     callback_group=self.lc_callback_group)
             for robot_name, robot_id in zip(self.live_names, self.live_ids)
         ]
 
@@ -198,6 +252,14 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         if self.submap_align_params.submap_descriptor is not None and submap.descriptor is None:
             self.get_logger().warning(f"Submap {submap.id} from robot {robot_id} has no descriptor; skipping it.")
             return
+        with self.queue_lock:
+            if not self.prior_maps_loaded:
+                self.submap_queue.append((submap, robot_id))
+                self.get_logger().info(f"Prior maps still loading; queued submap {submap.id} from robot "
+                                       f"{robot_id} ({len(self.submap_queue)} queued).")
+                return
+        # keep arrival order: anything still queued goes before this submap
+        self.drain_submap_queue()
         self.handle_new_submap(submap, robot_id)
 
     def handle_new_submap(self, submap: Submap, robot_id: int):
@@ -362,6 +424,13 @@ class ROMANLoopClosureNode(ROMANLoopClosureNodeBaseClass):
         """
         Send a summary of the loop closures found so far to the status topic.
         """
+        if self.prior_load_error is not None:
+            self.send_status_msg(self.prior_load_error, status=NodeInfoMsg.ERROR)
+            return
+        if not self.prior_maps_loaded:
+            self.send_status_msg(f"Loading prior maps; {len(self.submap_queue)} submaps queued, "
+                                 f"sms received: {self.num_ego_submaps}", status=NodeInfoMsg.STARTUP)
+            return
         detection_time = "N/A" if self.last_detection_time_s is None \
             else f"{self.last_detection_time_s:.2f} s"
         time_since_lc = "N/A" if self.last_lc_stamp is None \
